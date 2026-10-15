@@ -4,7 +4,7 @@ A browser automation runtime for bounded tasks, explicit permissions, and indepe
 
 ## Current stage
 
-Project scope and delivery plan. Application code follows in the next implementation increments. No runnable browser agent or measured benchmark is available yet.
+Strict action/task schemas and run lifecycle transitions are implemented and tested. The browser executor, dashboard, and model integration are not implemented yet. No measured task benchmark is available.
 
 ## Product contract
 
@@ -63,3 +63,14 @@ Each commit must leave a coherent repository. Progress and tests are reported as
 ## Evidence and privacy
 
 Recorded history must not execute actions during playback. Rerunning a task creates a fresh session and fresh approvals. Rich Playwright traces are initially restricted to synthetic data because traces may include page snapshots and network content.
+
+## Development checks
+
+Use Node.js 24 and pnpm 11.25.0.
+
+```sh
+pnpm install --frozen-lockfile
+pnpm check
+```
+
+The check command runs strict TypeScript validation and the current unit tests. Dependency versions are pinned in the lockfile.
