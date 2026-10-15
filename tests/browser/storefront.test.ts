@@ -10,8 +10,10 @@ it('filters through semantic controls and independently verifies browser-extract
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   let browser;
   try {
-    browser = await chromium.launch();
+    browser = await chromium.launch({ timeout: 10_000 });
     const context = await browser.newContext({ serviceWorkers: 'block' });
+    context.setDefaultTimeout(5_000);
+    context.setDefaultNavigationTimeout(10_000);
     const page = await context.newPage();
     await page.goto(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
     await page.getByLabel('Category', { exact: true }).selectOption('laptops');

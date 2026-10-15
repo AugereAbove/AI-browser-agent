@@ -47,10 +47,10 @@ export function renderStorefront(catalog: readonly Product[], query: ProductQuer
 <style>body{font:16px system-ui;margin:40px auto;max-width:900px;padding:0 24px;background:#f5f7fa;color:#182331}header p{color:#526174}form{display:grid;gap:12px;background:white;padding:24px;border-radius:12px}input,select,button{font:inherit;padding:8px}article{background:white;padding:20px;margin:16px 0;border:1px solid #dce3eb;border-radius:12px}button{background:#174d70;color:white;border:0;border-radius:6px}label{display:flex;gap:12px;align-items:center}h2{font-size:20px}</style></head>
 <body><header><h1>Fixture Store</h1><p>Synthetic products for repeatable browser-agent tests. Prices are in PLN.</p></header>
 <main><form method="get" action="/" aria-label="Product filters">
-<label>Category<select name="category">${options}</select></label>
-<label>Maximum price in grosz<input name="maxPriceCents" type="number" min="0" step="1" value="${query.maxPriceCents ?? ''}"></label>
-<label>In stock only<input name="inStockOnly" type="checkbox" value="true"${query.inStockOnly ? ' checked' : ''}></label>
-<label>Result limit<input name="limit" type="number" min="1" max="20" step="1" value="${query.limit}"></label>
+<label for="category">Category</label><select id="category" name="category">${options}</select>
+<label for="max-price">Maximum price in grosz</label><input id="max-price" name="maxPriceCents" type="number" min="0" step="1" value="${query.maxPriceCents ?? ''}">
+<label for="in-stock">In stock only</label><input id="in-stock" name="inStockOnly" type="checkbox" value="true"${query.inStockOnly ? ' checked' : ''}>
+<label for="limit">Result limit</label><input id="limit" name="limit" type="number" min="1" max="20" step="1" value="${query.limit}">
 <button type="submit">Apply filters</button></form>
 <section aria-label="Matching products"><h2>Results</h2><p role="status">${products.length} matching products</p>
 ${products.length === 0 ? '<p>No matching products.</p>' : products.map((product) => `<article aria-label="${escape(product.name)}" data-product-id="${product.id}"><h2>${escape(product.name)}</h2><p>${product.category}</p><p data-price-cents="${product.priceCents}">${(product.priceCents / 100).toFixed(2)} PLN</p><p>${product.inStock ? 'In stock' : 'Out of stock'}</p></article>`).join('')}

@@ -20,6 +20,7 @@ describe('read-only fixture service', () => {
     const html = await response.text();
     expect(response.status).toBe(200);
     expect(html).toContain('aria-label="Product filters"');
+    expect(html).toContain('<label for="category">Category</label><select id="category"');
     expect(html).toContain('data-product-id="laptop-04"');
     expect(html).not.toContain('data-product-id="laptop-06"');
     expect(html).toContain('data-price-cents="159900"');
