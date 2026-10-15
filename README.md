@@ -4,7 +4,7 @@ A browser automation runtime for bounded tasks, explicit permissions, and indepe
 
 ## Current stage
 
-Strict action/task schemas and run lifecycle transitions are implemented and tested. The browser executor, dashboard, and model integration are not implemented yet. No measured task benchmark is available.
+Strict action/task schemas, run lifecycle transitions, a seeded read-only storefront, and an independent product verifier are implemented. The browser executor, approval service, dashboard, and model integration are not implemented yet. The browser smoke test exercises the fixture directly; it is not an agent benchmark.
 
 ## Product contract
 
@@ -74,3 +74,24 @@ pnpm check
 ```
 
 The check command runs strict TypeScript validation and the current unit tests. Dependency versions are pinned in the lockfile.
+
+## Fixture storefront
+
+```sh
+pnpm dev:fixtures
+```
+
+Open http://127.0.0.1:4173. The catalog is synthetic, prices are integer grosz, and filtering uses labeled native form controls. This service accepts GET/HEAD only and exposes no write endpoints. The default seed is 0; tests can instantiate isolated server instances with another seed.
+
+For the actual Chromium smoke test:
+
+```sh
+pnpm exec playwright install chromium
+pnpm test:browser
+```
+
+The smoke test filters the storefront through its visible controls, extracts records, and passes them to an independent verifier. The verifier does not import the storefront filtering function. It checks completeness, order, uniqueness, and prices.
+
+Tested development environment: Linux, Node.js 24.19.0, pnpm 11.25.0. Windows and macOS have not yet been tested.
+
+Current local validation: strict types and 47 unit/integration tests pass. The Chromium smoke test has not passed here because the browser download returned an invalid archive. Its CI result is pending.
