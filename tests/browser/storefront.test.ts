@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { chromium } from 'playwright';
+import { launchBrowser } from './browser.ts';
 import type { AddressInfo } from 'node:net';
 import { createFixtureServer } from '../../apps/fixtures/src/server.ts';
 import { createCatalog } from '../../apps/fixtures/src/catalog.ts';
@@ -10,7 +10,7 @@ it('filters through semantic controls and independently verifies browser-extract
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   let browser;
   try {
-    browser = await chromium.launch({ timeout: 10_000 });
+    browser = await launchBrowser();
     const context = await browser.newContext({ serviceWorkers: 'block' });
     context.setDefaultTimeout(5_000);
     context.setDefaultNavigationTimeout(10_000);
