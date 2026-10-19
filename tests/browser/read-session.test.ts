@@ -242,3 +242,31 @@ describe('bounded fixture read sessions', () => {
     }
   });
 });
+
+it('extracts a bounded product snapshot from the named results region', async () => {
+  const origin = await listen(createFixtureServer());
+  const { session } = await open(origin);
+  await session.execute({ id: 'browse', type: 'navigate', url: `${origin}/?category=laptops&inStockOnly=true&limit=3` });
+  const result = await session.execute({ id: 'observe', type: 'extract', format: 'products', target: { by: 'role', role: 'region', name: 'Matching products' } });
+  expect(result.products).toEqual([
+    { id: 'laptop-04', priceCents: 159900 },
+    { id: 'laptop-01', priceCents: 189900 },
+    { id: 'laptop-02', priceCents: 229900 },
+  ]);
+  expect(result.text).toBeNull();
+  expect(Object.isFrozen(result.products)).toBe(true);
+  expect(Object.isFrozen(result.products?.[0])).toBe(true);
+});
+
+it.each([
+  { label: 'missing ID', body: '<article><p data-price-cents="1">Price</p></article>' },
+  { label: 'empty price', body: '<article data-product-id="one"><p data-price-cents="">Price</p></article>' },
+  { label: 'missing price', body: '<article data-product-id="one">Price unavailable</article>' },
+  { label: 'ambiguous price', body: '<article data-product-id="one"><p data-price-cents="1">One</p><p data-price-cents="2">Two</p></article>' },
+  { label: 'too many records', body: Array.from({ length: 21 }, (_, i) => `<article data-product-id="item_${i}"><p data-price-cents="1">Price</p></article>`).join('') },
+])('fails closed on a product observation with $label', async ({ body }) => {
+  const origin = await listen(createServer((_request, response) => html(response, `<section aria-label="Matching products">${body}</section>`)));
+  const { session } = await open(origin);
+  await session.execute({ id: 'browse', type: 'navigate', url: origin });
+  await expect(session.execute({ id: 'observe', type: 'extract', format: 'products', target: { by: 'role', role: 'region', name: 'Matching products' } })).rejects.toMatchObject({ code: 'invalid_observation' });
+});

@@ -1,17 +1,11 @@
-import { z } from 'zod';
-import { productQuerySchema } from '../../shared/src/contracts.ts';
+import { productQuerySchema, productRecordsSchema } from '../../shared/src/contracts.ts';
 
-interface CatalogRecord {
+export interface CatalogRecord {
   readonly id: string;
   readonly category: string;
   readonly priceCents: number;
   readonly inStock: boolean;
 }
-
-const resultSchema = z.array(z.strictObject({
-  id: z.string().min(1),
-  priceCents: z.number().int().nonnegative(),
-})).max(20);
 
 export interface ProductVerdict {
   readonly verified: boolean;
@@ -32,7 +26,7 @@ export function verifyProducts(catalog: readonly CatalogRecord[], rawQuery: unkn
   candidates.sort((a, b) => a.priceCents - b.priceCents || a.id.localeCompare(b.id));
   const expected = candidates.slice(0, query.limit);
   const expectedIds = expected.map((item) => item.id);
-  const parsed = resultSchema.safeParse(rawResult);
+  const parsed = productRecordsSchema.safeParse(rawResult);
   if (!parsed.success) return { verified: false, reason: 'invalid_result', expectedIds, observedIds: [] };
   const observedIds = parsed.data.map((item) => item.id);
   if (new Set(observedIds).size !== observedIds.length) {

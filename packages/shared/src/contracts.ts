@@ -22,7 +22,7 @@ const nameSchema = z.string().min(1).max(256);
 export const locatorSchema = z.discriminatedUnion('by', [
   z.strictObject({
     by: z.literal('role'),
-    role: z.enum(['button', 'link', 'textbox', 'combobox', 'checkbox', 'option', 'heading', 'row', 'cell', 'article']),
+    role: z.enum(['button', 'link', 'textbox', 'combobox', 'checkbox', 'option', 'heading', 'row', 'cell', 'article', 'region']),
     name: nameSchema,
   }),
   z.strictObject({ by: z.literal('label'), name: nameSchema }),
@@ -35,7 +35,7 @@ export const actionProposalSchema = z.discriminatedUnion('type', [
   z.strictObject({ id: actionId, type: z.literal('click'), target: locatorSchema }),
   z.strictObject({ id: actionId, type: z.literal('fill'), target: locatorSchema, value: z.string().max(8192) }),
   z.strictObject({ id: actionId, type: z.literal('select'), target: locatorSchema, value: z.string().max(256) }),
-  z.strictObject({ id: actionId, type: z.literal('extract'), target: locatorSchema }),
+  z.strictObject({ id: actionId, type: z.literal('extract'), target: locatorSchema, format: z.enum(['text', 'products']).default('text') }),
   z.strictObject({ id: actionId, type: z.literal('waitFor'), target: locatorSchema, timeoutMs: z.number().int().min(1).max(10_000) }),
 ]);
 
@@ -60,3 +60,10 @@ export type ActionProposal = z.infer<typeof actionProposalSchema>;
 export type LocatorSpec = z.infer<typeof locatorSchema>;
 export type ProductQuery = z.infer<typeof productQuerySchema>;
 export type TaskTemplate = z.infer<typeof taskTemplateSchema>;
+
+export const productRecordsSchema = z.array(z.strictObject({
+  id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/),
+  priceCents: z.number().int().min(0).max(100_000_000),
+})).max(20);
+
+export type ProductRecord = z.infer<typeof productRecordsSchema>[number];

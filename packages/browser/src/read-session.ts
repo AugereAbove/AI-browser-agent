@@ -3,11 +3,13 @@ import type { APIResponse, Browser, Locator, Page } from 'playwright';
 import { BudgetError, RunBudget } from '../../agent/src/budget.ts';
 import { PolicyError, ReadPolicy } from '../../policy/src/read-policy.ts';
 import type { LocatorSpec } from '../../shared/src/contracts.ts';
+import { productRecordsSchema } from '../../shared/src/contracts.ts';
+import type { ProductRecord } from '../../shared/src/contracts.ts';
 
 export type SessionCode = 'concurrent_action' | 'ambiguous_target' | 'action_timeout' |
   'network_failed' | 'http_error' | 'unsupported_content' | 'response_too_large' |
   'non_document_request' | 'frame_denied' | 'popup_denied' | 'download_denied' |
-  'websocket_denied' | 'execution_failed';
+  'websocket_denied' | 'execution_failed' | 'invalid_observation';
 
 export class SessionError extends Error {
   readonly code: SessionCode;
@@ -25,6 +27,7 @@ export interface ReadResult {
   readonly url: string;
   readonly text: string | null;
   readonly truncated: boolean;
+  readonly products: readonly Readonly<ProductRecord>[] | null;
 }
 
 export interface ReadSession {
@@ -160,21 +163,34 @@ export async function openReadSession(
         const action = policy.assertAction(rawAction, ownedPage.url());
         budget.consumeAction(action.id);
         let text: string | null = null;
+        let products: readonly Readonly<ProductRecord>[] | null = null;
         if (action.type === 'navigate') {
           await ownedPage.goto(action.url, { waitUntil: 'domcontentloaded', timeout: budget.actionTimeout() });
         } else {
           const target = locatorFor(ownedPage, action.target);
-          if (await target.count() > 1) throw new SessionError('ambiguous_target');
           await target.waitFor({ state: 'visible', timeout: budget.actionTimeout(action.type === 'waitFor' ? action.timeoutMs : undefined) });
-          if (await target.count() !== 1) throw new SessionError('ambiguous_target');
-          if (action.type === 'extract') text = await target.innerText({ timeout: budget.actionTimeout() });
+          if (action.type === 'extract' && action.format === 'products') {
+            const rawProducts = await target.evaluate((scope) => Array.from(scope.querySelectorAll('article')).slice(0, 21).map((article) => {
+              const prices = article.querySelectorAll('[data-price-cents]');
+              const rawPrice = prices.length === 1 ? prices[0]?.getAttribute('data-price-cents') : null;
+              return {
+                id: article.getAttribute('data-product-id'),
+                priceCents: rawPrice !== null && rawPrice !== undefined && /^\d+$/.test(rawPrice) ? Number(rawPrice) : null,
+              };
+            }), undefined, { timeout: budget.actionTimeout() });
+            const parsed = productRecordsSchema.safeParse(rawProducts);
+            if (!parsed.success) throw new SessionError('invalid_observation');
+            products = Object.freeze(parsed.data.map((record) => Object.freeze(record)));
+          } else if (action.type === 'extract') {
+            text = await target.innerText({ timeout: budget.actionTimeout() });
+          }
         }
         assertOpen();
         policy.assertRequest(ownedPage.url(), 'GET');
         const truncated = text !== null && text.length > budget.limits.maxTextLength;
         return Object.freeze({
           actionId: action.id, type: action.type, url: ownedPage.url(),
-          text: text?.slice(0, budget.limits.maxTextLength) ?? null, truncated,
+          text: text?.slice(0, budget.limits.maxTextLength) ?? null, truncated, products,
         });
       } catch (error) {
         const failure = fatal ?? executionError(error);
