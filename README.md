@@ -2,7 +2,7 @@
 
 A browser automation runtime for bounded tasks and independently verified results.
 
-Includes validated action/task schemas, run lifecycle rules, fixture read policies, action/request budgets, isolated read-only browser sessions, a seeded storefront, and a product result verifier. The worker, dashboard, approval service, persistence, and model integration are not implemented yet.
+Includes validated action/task schemas, run lifecycle rules, fixture read policies, action/request budgets, isolated read-only browser sessions, a seeded storefront, and a deterministic product task runner with independent verification. The worker, dashboard, approval service, persistence, and model integration are not implemented yet.
 
 ## Setup
 
@@ -43,3 +43,11 @@ The test filters products through labeled form controls, extracts results, and p
 These restrictions support controlled synthetic fixtures, not arbitrary websites. A browser context is not an operating-system sandbox. Response-size checks occur after fetching; process memory and host-network isolation are not implemented.
 
 Browser tests can use an existing compatible Chromium executable through `BROWSER_EXECUTABLE_PATH`. CI installs the Chromium build pinned by Playwright.
+
+## Verified fixture task
+
+```sh
+pnpm demo --category laptops --max-price 250000 --in-stock --limit 3
+```
+
+Starts a private loopback storefront, opens a fresh browser context, extracts product records, and prints a JSON verdict with ordered in-memory events. Prices use integer grosz. Optional `--seed` accepts an unsigned 32-bit integer. Exit status is 0 for verified success, 1 for failure, and 130 for cancellation. Install Chromium with the browser-test setup above first. This deterministic fixture workflow uses no model or paid credentials.
