@@ -14,7 +14,8 @@
     "check": "pnpm typecheck && pnpm test",
     "dev:fixtures": "node --env-file-if-exists=.env apps/fixtures/src/server.ts",
     "test:browser": "vitest run --config vitest.browser.config.ts",
-    "demo": "node apps/cli/src/main.ts"
+    "demo": "node apps/cli/src/main.ts",
+    "history": "node apps/cli/src/history.ts"
   },
   "dependencies": {
     "zod": "4.6.7"

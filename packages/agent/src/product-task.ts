@@ -20,6 +20,10 @@ export interface ProductTaskConfig {
   readonly origin: string;
   readonly referenceCatalog: readonly CatalogRecord[];
   readonly timeoutMs?: number;
+  readonly journal?: {
+    start(runId: string, templateId: string): void;
+    append(runId: string, event: TaskEvent): void;
+  };
 }
 
 export interface TaskEvent {
@@ -49,6 +53,8 @@ export async function runProductTask(
   signal?: AbortSignal,
 ): Promise<ProductTaskResult> {
   const runId = randomUUID();
+  const journal = config.journal;
+  journal?.start(runId, productTaskTemplate.id);
   const status: { state: RunState } = { state: 'queued' };
   let session: ReadSession | undefined;
   let records: readonly Readonly<ProductRecord>[] = Object.freeze([]);
@@ -57,7 +63,9 @@ export async function runProductTask(
   let phase: 'input' | 'configuration' | 'execution' = 'input';
   const events: TaskEvent[] = [];
   const emit = (event: Omit<TaskEvent, 'sequence' | 'state'>) => {
-    events.push(Object.freeze({ ...event, sequence: events.length + 1, state: status.state }));
+    const entry = Object.freeze({ ...event, sequence: events.length + 1, state: status.state });
+    journal?.append(runId, entry);
+    events.push(entry);
   };
   const move = (event: RunEvent) => {
     status.state = transition(status.state, event);

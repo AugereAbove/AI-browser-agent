@@ -21,9 +21,14 @@ const lifecycleEvents: RunEvent['type'][] = [
 export class RunStore {
   readonly #db: DatabaseSync;
 
-  constructor(path: string) {
-    this.#db = new DatabaseSync(path, { timeout: 5000 });
+  constructor(path: string, options: { readOnly?: boolean } = {}) {
+    this.#db = new DatabaseSync(path, { timeout: 5000, readOnly: options.readOnly ?? false });
     try {
+      if (options.readOnly) {
+        const version = Number(this.#db.prepare('PRAGMA user_version').get()?.user_version);
+        if (version !== 1) throw new Error('Unsupported database version');
+        return;
+      }
       this.#db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL');
       this.#transaction(() => {
         const version = Number(this.#db.prepare('PRAGMA user_version').get()?.user_version);

@@ -110,3 +110,18 @@ test('SQL-shaped identifiers remain data and cursors are bounded integers', () =
     sequence: 1001, type: 'action_started', state: 'running', actionId: 'a', actionType: 'extract',
   })).toThrow();
 });
+
+
+test('read-only history cannot create a missing database or change existing runs', () => {
+  const path = database();
+  expect(() => new RunStore(path, { readOnly: true })).toThrow();
+  const writer = open(path);
+  start(writer);
+  const reader = new RunStore(path, { readOnly: true });
+  try {
+    expect(reader.get('local', 'run')?.state).toBe('running');
+    expect(() => reader.interruptOrphans()).toThrow();
+    expect(() => reader.create('new', 'local', 'store-filter-v1')).toThrow();
+    expect(writer.get('local', 'run')?.state).toBe('running');
+  } finally { reader.close(); }
+});

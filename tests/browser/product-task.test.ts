@@ -116,3 +116,13 @@ describe('verified deterministic product tasks', () => {
     expect(result).toMatchObject({ state: 'timed_out', verified: false, errorCode: 'deadline_exceeded' });
   });
 });
+
+
+it('journal failures abort browser work and cannot produce success', async () => {
+  const origin = await listen(createFixtureServer());
+  await expect(runProductTask(browser, { origin, referenceCatalog: createCatalog(), journal: {
+    start() {},
+    append(_runId, event) { if (event.sequence >= 3) throw new Error('Disk unavailable'); },
+  } }, {})).rejects.toThrow('Disk unavailable');
+  expect(browser.contexts()).toHaveLength(0);
+});

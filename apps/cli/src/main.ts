@@ -1,14 +1,19 @@
+import { mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { RunStore } from '../../../packages/storage/src/run-store.ts';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
 import { createFixtureServer } from '../../fixtures/src/server.ts';
 import { createCatalog } from '../../fixtures/src/catalog.ts';
 import { productQuerySchema } from '../../../packages/shared/src/contracts.ts';
+import type { Browser } from 'playwright';
+import type { TaskEvent } from '../../../packages/agent/src/product-task.ts';
 import { runProductTask } from '../../../packages/agent/src/product-task.ts';
 
 export function parseInput(args: string[]) {
   const { values } = parseArgs({ args, options: {
-    category: { type: 'string' }, 'max-price': { type: 'string' },
+    database: { type: 'string' }, category: { type: 'string' }, 'max-price': { type: 'string' },
     'in-stock': { type: 'boolean' }, limit: { type: 'string' }, seed: { type: 'string' },
   }, strict: true, allowPositionals: false });
   const integer = (value: string | undefined) => {
@@ -24,18 +29,31 @@ export function parseInput(args: string[]) {
     ...(values.limit === undefined ? {} : { limit: integer(values.limit) }),
     inStockOnly: values['in-stock'] ?? false,
   });
-  return { seed, query };
+  if (values.database !== undefined && !values.database.trim()) throw new Error('Invalid database path');
+  return { seed, query, database: values.database };
+}
+
+function journalFor(store: RunStore) {
+  return {
+    start: (runId: string, templateId: string) => store.create(runId, 'local', templateId),
+    append: (runId: string, event: TaskEvent) => store.append(runId, event),
+  };
 }
 
 export async function main(args: string[]) {
-  const { seed, query } = parseInput(args);
+  const { seed, query, database } = parseInput(args);
   const server = createFixtureServer(seed);
   const controller = new AbortController();
   const cancel = () => controller.abort();
   process.once('SIGINT', cancel);
   process.once('SIGTERM', cancel);
-  let browser;
+  let browser: Browser | undefined;
+  let store: RunStore | undefined;
   try {
+    if (database) {
+      await mkdir(dirname(database), { recursive: true, mode: 0o700 });
+      store = new RunStore(database);
+    }
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
       server.listen(0, '127.0.0.1', resolve);
@@ -48,6 +66,7 @@ export async function main(args: string[]) {
     });
     const result = await runProductTask(browser, {
       origin: `http://127.0.0.1:${address.port}`, referenceCatalog: createCatalog(seed),
+      ...(store ? { journal: journalFor(store) } : {}),
     }, query, controller.signal);
     console.log(JSON.stringify(result));
     return result.state === 'cancelled' ? 130 : result.verified ? 0 : 1;
@@ -57,10 +76,14 @@ export async function main(args: string[]) {
     try {
       await browser?.close();
     } finally {
-      await new Promise<void>((resolve, reject) => server.close((error) => {
-        if (error && server.listening) reject(error);
-        else resolve();
-      }));
+      try {
+        store?.close();
+      } finally {
+        await new Promise<void>((resolve, reject) => server.close((error) => {
+          if (error && server.listening) reject(error);
+          else resolve();
+        }));
+      }
     }
   }
 }
