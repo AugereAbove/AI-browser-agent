@@ -130,6 +130,11 @@ export class RunStore {
     });
   }
 
+  status(owner: string, runId: string) {
+    const row = this.#db.prepare('SELECT state, sequence, created_at FROM runs WHERE id = ? AND owner = ?').get(runId, owner);
+    return row ? { state: row.state as RunState, sequence: Number(row.sequence), createdAt: String(row.created_at) } : null;
+  }
+
   get(owner: string, runId: string, afterSequence = 0) {
     if (!Number.isSafeInteger(afterSequence) || afterSequence < 0) throw new Error('Invalid event cursor');
     const row = this.#db.prepare('SELECT * FROM runs WHERE id = ? AND owner = ?').get(runId, owner);
@@ -174,6 +179,11 @@ export class RunStore {
     return this.#db.prepare('SELECT id, template_id, state, sequence, created_at FROM runs WHERE owner = ? ORDER BY created_at DESC, id DESC LIMIT 50')
       .all(owner).map((row) => ({ run_id: String(row.id), template_id: String(row.template_id), state: row.state as RunState,
         sequence: Number(row.sequence), created_at: String(row.created_at) }));
+  }
+
+  nextQueued(owner: string) {
+    const row = this.#db.prepare("SELECT id, created_at FROM runs WHERE owner = ? AND state = 'queued' AND id IN (SELECT run_id FROM run_requests WHERE owner = ?) ORDER BY created_at, id LIMIT 1").get(owner, owner);
+    return row ? { runId: String(row.id), createdAt: String(row.created_at) } : null;
   }
 
   end(owner: string, runId: string, state: 'cancelled' | 'interrupted' | 'timed_out') {

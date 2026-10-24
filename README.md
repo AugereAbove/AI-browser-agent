@@ -2,7 +2,7 @@
 
 A browser automation runtime for bounded tasks and independently verified results.
 
-Includes validated action/task schemas, run lifecycle rules, fixture read policies, action/request budgets, isolated read-only browser sessions, a seeded storefront, and a deterministic product task runner with independent verification. The worker, dashboard, approval service, persistent worker, and model integration are not implemented yet.
+Includes validated action/task schemas, run lifecycle rules, fixture read policies, action/request budgets, isolated read-only browser sessions, a seeded storefront, and a deterministic product task runner with independent verification. Includes a local authenticated API and a separate browser worker. The dashboard, approval service, and model integration are not implemented yet.
 
 ## Setup
 
@@ -59,8 +59,34 @@ pnpm demo --database .agent/runs.sqlite --category audio
 pnpm history --database .agent/runs.sqlite --run-id <runId>
 ```
 
-The demo prints the run ID. `history` reads saved state and events without starting a browser; `--after <sequence>` reads only newer events. The local CLI uses owner `local`; it is not a network authorization layer. Only bounded task-event metadata is stored, without page text, credentials, input payloads, or verifier reference answers.
+The demo prints the run ID. `history` reads saved state and events without starting a browser; `--after <sequence>` reads only newer events. The local CLI uses owner `local`; it is not a network authorization layer. Only bounded task-event metadata is stored, without page text, credentials, or verifier reference answers. The API additionally stores validated synthetic product inputs and seed for worker dispatch.
 
-SQLite schema version 1 is created automatically using Node 24's built-in `node:sqlite`. Event insertion and state changes commit atomically; terminal runs reject additional events. Run history currently has no automatic expiry. To reset development history, stop all processes using the database and delete the database plus its `-wal` and `-shm` files.
+SQLite schema version 2 is created automatically, migrating version 1 without deleting history using Node 24's built-in `node:sqlite`. Event insertion and state changes commit atomically; terminal runs reject additional events. Run history currently has no automatic expiry. To reset development history, stop all processes using the database and delete the database plus its `-wal` and `-shm` files.
 
-`RunStore.interruptOrphans()` is reserved for an exclusive coordinator at startup; it marks in-flight runs interrupted and never replays browser actions. The CLI does not invoke it because another CLI may still be running. Automatic crash recovery and process supervision are not implemented.
+`RunStore.interruptOrphans()` is reserved for an exclusive coordinator at startup; it marks in-flight runs interrupted and never replays browser actions. The CLI does not invoke it because another CLI may still be running. The API coordinator performs owner-scoped startup interruption and supervises its worker.
+
+
+## Local API
+
+The API worker currently supports Linux with Node 24 and a local filesystem. Install Chromium as above, copy `.env.example` to `.env`, and set `AGENT_API_TOKEN` to a random URL-safe secret of at least 32 characters. Generate one with `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`. Keep it in `.env`; never commit it.
+
+```sh
+pnpm dev:api
+```
+
+Binds to `127.0.0.1:4180`. Every request needs `Authorization: Bearer <AGENT_API_TOKEN>`. The exact configured Host and any Origin must match the API address; cross-site browser requests are denied and CORS is disabled. This is a local single-user API, not an Internet-facing service or protection against other programs that can read your files.
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| GET | `/v1/templates` | Supported immutable task and budgets |
+| POST | `/v1/runs` | Admit a task and return 202 with `run_id` |
+| GET | `/v1/runs` | Most recent 50 runs for the authenticated local owner |
+| GET | `/v1/runs/:id` | State and ordered event history |
+| GET | `/v1/runs/:id/events?after=0` | Poll events after a sequence; not SSE yet |
+| POST | `/v1/runs/:id/cancel` | Cancel with JSON body `{}` |
+
+POST requests require `Idempotency-Key`, 8–128 letters, digits, underscores or hyphens. Submission JSON is `{"template_id":"store-filter-v1","input":{"category":"audio","limit":3},"seed":0}`. Only the declared product query fields are accepted; clients cannot supply destinations, owners, commands or budgets. Repeating the same key and payload returns the existing run; changing the payload returns 409. Cancellation retries retain the existing terminal result. Errors contain `error.code` and a server-generated `request_id`. Request bodies are capped at 4 KiB and at most 16 runs may be outstanding per owner.
+
+The coordinator holds a separate SQLite file lock, dispatches one fresh worker at a time, and interrupts old API runs on startup without resuming them. The CLI owner is separate. The 30-second deadline includes queue and browser startup time. Cancellation requests graceful worker shutdown, then escalates after two seconds. The worker receives a minimal environment without the API token. Keep the database and coordinator lock files on local storage; do not delete or replace them while running.
+
+Browser process-group cleanup on Linux is best effort; a crash during launch can occur before its PID is reported. Use container/process-group supervision and host-network restrictions for stronger isolation. The application does not supply that deployment boundary yet. Automatic retention cleanup, saved product-result artifacts, SSE, approvals and dashboard are still absent. API history contains verification reason and event metadata rather than full product observations.

@@ -17,6 +17,7 @@ export const productTaskTemplate = Object.freeze({
 });
 
 export interface ProductTaskConfig {
+  readonly runId?: string;
   readonly origin: string;
   readonly referenceCatalog: readonly CatalogRecord[];
   readonly timeoutMs?: number;
@@ -52,7 +53,7 @@ export async function runProductTask(
   rawInput: unknown,
   signal?: AbortSignal,
 ): Promise<ProductTaskResult> {
-  const runId = randomUUID();
+  const runId = config.runId === undefined ? randomUUID() : z.uuid().parse(config.runId);
   const journal = config.journal;
   journal?.start(runId, productTaskTemplate.id);
   const status: { state: RunState } = { state: 'queued' };
