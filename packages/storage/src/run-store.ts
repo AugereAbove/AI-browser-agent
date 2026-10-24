@@ -1,3 +1,5 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { runRequestSchema, idempotencyKeySchema } from '../../shared/src/run-request.ts';
 import { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
 import { isTerminal, transition } from '../../agent/src/lifecycle.ts';
@@ -18,6 +20,9 @@ const lifecycleEvents: RunEvent['type'][] = [
   'verification_passed', 'verification_failed', 'execution_failed', 'cancelled', 'deadline_exceeded', 'worker_lost',
 ];
 
+export class RequestConflictError extends Error {}
+export class QueueFullError extends Error {}
+
 export class RunStore {
   readonly #db: DatabaseSync;
 
@@ -26,13 +31,13 @@ export class RunStore {
     try {
       if (options.readOnly) {
         const version = Number(this.#db.prepare('PRAGMA user_version').get()?.user_version);
-        if (version !== 1) throw new Error('Unsupported database version');
+        if (version !== 1 && version !== 2) throw new Error('Unsupported database version');
         return;
       }
       this.#db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL');
       this.#transaction(() => {
         const version = Number(this.#db.prepare('PRAGMA user_version').get()?.user_version);
-        if (version > 1) throw new Error('Unsupported database version');
+        if (version > 2) throw new Error('Unsupported database version');
         if (version === 0) {
           this.#db.exec(`
             CREATE TABLE runs (
@@ -47,6 +52,19 @@ export class RunStore {
             ) STRICT;
             CREATE INDEX runs_owner_created ON runs(owner, created_at);
             PRAGMA user_version = 1;
+          `);
+        }
+        if (version < 2) {
+          this.#db.exec(`
+            CREATE TABLE run_requests (
+              owner TEXT NOT NULL, idempotency_key TEXT NOT NULL, run_id TEXT NOT NULL UNIQUE REFERENCES runs(id) ON DELETE CASCADE,
+              digest TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(owner, idempotency_key)
+            ) STRICT;
+            CREATE TABLE cancel_requests (
+              owner TEXT NOT NULL, idempotency_key TEXT NOT NULL, run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+              PRIMARY KEY(owner, idempotency_key)
+            ) STRICT;
+            PRAGMA user_version = 2;
           `);
         }
       });
@@ -122,9 +140,74 @@ export class RunStore {
       sequence: Number(row.sequence), createdAt: String(row.created_at), updatedAt: String(row.updated_at), events };
   }
 
-  interruptOrphans() {
+  admit(owner: string, key: string, rawRequest: unknown) {
+    idSchema.parse(owner);
+    idempotencyKeySchema.parse(key);
+    const request = runRequestSchema.parse(rawRequest);
+    const payload = JSON.stringify(request);
+    const digest = createHash('sha256').update(payload).digest('hex');
     return this.#transaction(() => {
-      const rows = this.#db.prepare("SELECT id, sequence FROM runs WHERE state IN ('queued', 'running', 'awaiting_approval', 'verifying')").all();
+      const existing = this.#db.prepare('SELECT run_id, digest FROM run_requests WHERE owner = ? AND idempotency_key = ?').get(owner, key);
+      if (existing) {
+        if (existing.digest !== digest) throw new RequestConflictError('Idempotency key reused with different input');
+        return { runId: String(existing.run_id), reused: true };
+      }
+      const count = this.#db.prepare("SELECT count(*) AS total FROM runs WHERE owner = ? AND state IN ('queued', 'running', 'awaiting_approval', 'verifying')").get(owner);
+      if (Number(count?.total) >= 16) throw new QueueFullError('Queue is full');
+      const runId = randomUUID();
+      this.create(runId, owner, request.template_id);
+      this.#db.prepare('INSERT INTO run_requests(owner, idempotency_key, run_id, digest, payload) VALUES (?, ?, ?, ?, ?)')
+        .run(owner, key, runId, digest, payload);
+      this.#db.prepare('INSERT INTO run_events(run_id, sequence, payload) VALUES (?, 1, ?)')
+        .run(runId, JSON.stringify({ sequence: 1, type: 'state_changed', state: 'queued' }));
+      this.#db.prepare('UPDATE runs SET sequence = 1 WHERE id = ?').run(runId);
+      return { runId, reused: false };
+    });
+  }
+
+  request(owner: string, runId: string) {
+    const row = this.#db.prepare('SELECT payload FROM run_requests WHERE owner = ? AND run_id = ?').get(owner, runId);
+    return row ? runRequestSchema.parse(JSON.parse(String(row.payload))) : null;
+  }
+
+  list(owner: string) {
+    return this.#db.prepare('SELECT id, template_id, state, sequence, created_at FROM runs WHERE owner = ? ORDER BY created_at DESC, id DESC LIMIT 50')
+      .all(owner).map((row) => ({ run_id: String(row.id), template_id: String(row.template_id), state: row.state as RunState,
+        sequence: Number(row.sequence), created_at: String(row.created_at) }));
+  }
+
+  end(owner: string, runId: string, state: 'cancelled' | 'interrupted' | 'timed_out') {
+    return this.#transaction(() => this.#end(owner, runId, state));
+  }
+
+  #end(owner: string, runId: string, state: 'cancelled' | 'interrupted' | 'timed_out') {
+    const row = this.#db.prepare('SELECT state, sequence FROM runs WHERE id = ? AND owner = ?').get(runId, owner);
+    if (!row) return null;
+    if (isTerminal(row.state as RunState)) return row.state as RunState;
+    const sequence = Number(row.sequence) + 1;
+    const next = transition(row.state as RunState, { type: state === 'interrupted' ? 'worker_lost' : state === 'timed_out' ? 'deadline_exceeded' : 'cancelled' });
+    this.#db.prepare('INSERT INTO run_events(run_id, sequence, payload) VALUES (?, ?, ?)')
+      .run(runId, sequence, JSON.stringify({ sequence, type: 'state_changed', state: next }));
+    this.#db.prepare('UPDATE runs SET state = ?, sequence = ?, updated_at = ? WHERE id = ?')
+      .run(next, sequence, new Date().toISOString(), runId);
+    return next;
+  }
+
+  cancel(owner: string, key: string, runId: string) {
+    idempotencyKeySchema.parse(key);
+    return this.#transaction(() => {
+      const existing = this.#db.prepare('SELECT run_id FROM cancel_requests WHERE owner = ? AND idempotency_key = ?').get(owner, key);
+      if (existing && existing.run_id !== runId) throw new RequestConflictError('Idempotency key reused with different run');
+      const state = this.#end(owner, runId, 'cancelled');
+      if (state === null) return null;
+      if (!existing) this.#db.prepare('INSERT INTO cancel_requests(owner, idempotency_key, run_id) VALUES (?, ?, ?)').run(owner, key, runId);
+      return state;
+    });
+  }
+
+  interruptOrphans(owner?: string) {
+    return this.#transaction(() => {
+      const rows = this.#db.prepare("SELECT id, sequence FROM runs WHERE state IN ('queued', 'running', 'awaiting_approval', 'verifying') AND (? IS NULL OR owner = ?)").all(owner ?? null, owner ?? null);
       const now = new Date().toISOString();
       for (const row of rows) {
         const sequence = Number(row.sequence) + 1;

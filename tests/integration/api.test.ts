@@ -9,7 +9,7 @@ const stores: RunStore[] = [];
 function setup() {
   const store = new RunStore(':memory:');
   stores.push(store);
-  const app = createApi({ store, owner: 'api-local', token, origin: 'http://127.0.0.1:4180' });
+  const app = createApi({ store, owner: 'api-local', token, origin: 'http://127.0.0.1:4180', submissions: true });
   apps.push(app);
   return { app, store };
 }
@@ -63,4 +63,43 @@ test('configuration rejects weak credentials and non-loopback origins', () => {
   stores.push(store);
   expect(() => createApi({ store, owner: 'local', token: 'weak', origin: 'http://127.0.0.1:4180' })).toThrow();
   expect(() => createApi({ store, owner: 'local', token, origin: 'http://example.com' })).toThrow();
+});
+
+
+test('idempotent admission and cancellation retain one ordered run', async () => {
+  const { app, store } = setup();
+  const writeHeaders = { ...headers, 'idempotency-key': 'request_123' };
+  const payload = { template_id: 'store-filter-v1', input: { category: 'audio' } };
+  const first = await app.inject({ method: 'POST', url: '/v1/runs', headers: writeHeaders, payload });
+  const duplicate = await app.inject({ method: 'POST', url: '/v1/runs', headers: writeHeaders, payload });
+  expect(first.statusCode).toBe(202);
+  expect(duplicate.json()).toEqual(first.json());
+  const runId = first.json().run_id;
+  expect(store.get('api-local', runId)?.events).toHaveLength(1);
+  const conflict = await app.inject({ method: 'POST', url: '/v1/runs', headers: writeHeaders, payload: { ...payload, seed: 5 } });
+  expect(conflict.statusCode).toBe(409);
+  expect(store.list('api-local')).toHaveLength(1);
+  const cancel = { method: 'POST' as const, url: `/v1/runs/${runId}/cancel`, headers: { ...headers, 'idempotency-key': 'cancel_123' }, payload: {} };
+  expect((await app.inject(cancel)).json().state).toBe('cancelled');
+  expect((await app.inject(cancel)).json().state).toBe('cancelled');
+  expect(store.get('api-local', runId)?.events.map((event) => event.sequence)).toEqual([1, 2]);
+});
+
+test.each([
+  { template_id: 'unknown', input: {} },
+  { template_id: 'store-filter-v1', input: { targetUrl: 'https://example.com' } },
+  { template_id: 'store-filter-v1', input: {}, owner: 'someone-else' },
+  { template_id: 'store-filter-v1', input: {}, maxActions: 999 },
+])('rejects unsupported task requests before admission', async (payload) => {
+  const { app, store } = setup();
+  const result = await app.inject({ method: 'POST', url: '/v1/runs', headers: { ...headers, 'idempotency-key': 'request_123' }, payload });
+  expect(result.statusCode).toBe(400);
+  expect(store.list('api-local')).toHaveLength(0);
+});
+
+test('missing idempotency keys and oversized JSON are rejected', async () => {
+  const { app, store } = setup();
+  expect((await app.inject({ method: 'POST', url: '/v1/runs', headers, payload: { template_id: 'store-filter-v1', input: {} } })).statusCode).toBe(400);
+  expect((await app.inject({ method: 'POST', url: '/v1/runs', headers, payload: { data: 'x'.repeat(5000) } })).statusCode).toBe(413);
+  expect(store.list('api-local')).toHaveLength(0);
 });

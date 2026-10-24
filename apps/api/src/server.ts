@@ -2,6 +2,8 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import Fastify from 'fastify';
 import { z } from 'zod';
 import { productTaskTemplate } from '../../../packages/agent/src/product-task.ts';
+import { runRequestSchema, idempotencyKeySchema } from '../../../packages/shared/src/run-request.ts';
+import { RequestConflictError, QueueFullError } from '../../../packages/storage/src/run-store.ts';
 import type { RunStore } from '../../../packages/storage/src/run-store.ts';
 
 export class ApiError extends Error {
@@ -15,6 +17,7 @@ export interface ApiConfig {
   readonly origin: string;
   readonly owner: string;
   readonly store: RunStore;
+  readonly submissions?: boolean;
 }
 
 export function createApi(config: ApiConfig) {
@@ -40,13 +43,29 @@ export function createApi(config: ApiConfig) {
     }
   });
   app.setErrorHandler((error, request, reply) => {
-    const status = error instanceof ApiError ? error.status : error instanceof z.ZodError ? 400 :
+    const status = error instanceof RequestConflictError ? 409 : error instanceof QueueFullError ? 429 : error instanceof ApiError ? error.status : error instanceof z.ZodError ? 400 :
       typeof error === 'object' && error !== null && 'statusCode' in error && typeof error.statusCode === 'number' && error.statusCode < 500 ? error.statusCode : 500;
-    const code = error instanceof ApiError ? error.code : status === 400 ? 'invalid_request' : status === 413 ? 'body_too_large' :
+    const code = error instanceof RequestConflictError ? 'idempotency_conflict' : error instanceof QueueFullError ? 'queue_full' : error instanceof ApiError ? error.code : status === 400 ? 'invalid_request' : status === 413 ? 'body_too_large' :
       status === 415 ? 'unsupported_media_type' : 'internal_error';
     reply.code(status).send({ error: { code, request_id: request.id } });
   });
   app.setNotFoundHandler((request, reply) => reply.code(404).send({ error: { code: 'not_found', request_id: request.id } }));
+  app.post('/v1/runs', async (request, reply) => {
+    if (!config.submissions) throw new ApiError(503, 'submissions_unavailable');
+    const key = idempotencyKeySchema.parse(request.headers['idempotency-key']);
+    const input = runRequestSchema.parse(request.body);
+    const run = config.store.admit(config.owner, key, input);
+    return reply.code(202).send({ run_id: run.runId });
+  });
+  app.post('/v1/runs/:id/cancel', async (request) => {
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const key = idempotencyKeySchema.parse(request.headers['idempotency-key']);
+    z.strictObject({}).parse(request.body);
+    const state = config.store.cancel(config.owner, key, id);
+    if (state === null) throw new ApiError(404, 'run_not_found');
+    return { run_id: id, state };
+  });
+  app.get('/v1/runs', async () => ({ runs: config.store.list(config.owner) }));
   app.get('/v1/templates', async () => ({ templates: [productTaskTemplate] }));
   app.get('/v1/runs/:id', async (request) => {
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);

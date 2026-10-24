@@ -125,3 +125,47 @@ test('read-only history cannot create a missing database or change existing runs
     expect(writer.get('local', 'run')?.state).toBe('running');
   } finally { reader.close(); }
 });
+
+
+test('admission deduplicates after reopening and scopes keys to the owner', () => {
+  const path = database();
+  const first = new RunStore(path);
+  const request = { template_id: 'store-filter-v1', input: {} };
+  const admitted = first.admit('api-local', 'same_key', request);
+  first.close();
+  const second = open(path);
+  expect(second.admit('api-local', 'same_key', request)).toEqual({ ...admitted, reused: true });
+  expect(second.admit('other', 'same_key', request).runId).not.toBe(admitted.runId);
+  expect(second.request('other', admitted.runId)).toBeNull();
+  expect(() => second.admit('api-local', 'same_key', { ...request, seed: 1 })).toThrow();
+});
+
+test('owner-scoped recovery leaves other live owners alone', () => {
+  const store = open();
+  store.admit('api-local', 'request_one', { template_id: 'store-filter-v1', input: {} });
+  const other = store.admit('local', 'request_two', { template_id: 'store-filter-v1', input: {} });
+  expect(store.interruptOrphans('api-local')).toBe(1);
+  expect(store.get('local', other.runId)?.state).toBe('queued');
+});
+
+test('queue limit is enforced without preventing idempotent retries', () => {
+  const store = open();
+  const request = { template_id: 'store-filter-v1', input: {} };
+  for (let index = 0; index < 16; index++) store.admit('local', `request_${index}`, request);
+  expect(() => store.admit('local', 'request_full', request)).toThrow('Queue is full');
+  expect(store.admit('local', 'request_0', request).reused).toBe(true);
+  expect(store.list('local')).toHaveLength(16);
+});
+
+test('schema v1 upgrades preserve existing runs and events', () => {
+  const path = database();
+  const raw = new DatabaseSync(path);
+  raw.exec(`CREATE TABLE runs (id TEXT PRIMARY KEY, owner TEXT NOT NULL, template_id TEXT NOT NULL, state TEXT NOT NULL, sequence INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL) STRICT;
+    CREATE TABLE run_events (run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, sequence INTEGER NOT NULL CHECK(sequence > 0), payload TEXT NOT NULL, PRIMARY KEY(run_id, sequence)) STRICT;
+    PRAGMA user_version = 1;`);
+  raw.prepare('INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?)').run('legacy', 'local', 'store-filter-v1', 'queued', 0, '2026-10-21', '2026-10-21');
+  raw.close();
+  const store = open(path);
+  expect(store.get('local', 'legacy')?.state).toBe('queued');
+  expect(store.admit('local', 'new_request', { template_id: 'store-filter-v1', input: {} }).runId).toBeTruthy();
+});
