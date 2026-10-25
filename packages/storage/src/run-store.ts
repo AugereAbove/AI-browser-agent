@@ -205,12 +205,13 @@ export class RunStore {
     return row ? { state: row.state as RunState, sequence: Number(row.sequence), createdAt: String(row.created_at) } : null;
   }
 
-  get(owner: string, runId: string, afterSequence = 0) {
+  get(owner: string, runId: string, afterSequence = 0, limit = 1000) {
     if (!Number.isSafeInteger(afterSequence) || afterSequence < 0) throw new Error('Invalid event cursor');
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new Error('Invalid event limit');
     const row = this.#db.prepare('SELECT * FROM runs WHERE id = ? AND owner = ?').get(runId, owner);
     if (!row) return null;
-    const events = this.#db.prepare('SELECT payload FROM run_events WHERE run_id = ? AND sequence > ? ORDER BY sequence')
-      .all(runId, afterSequence).map((item) => eventSchema.parse(JSON.parse(String(item.payload))));
+    const events = this.#db.prepare('SELECT payload FROM run_events WHERE run_id = ? AND sequence > ? AND sequence <= ? ORDER BY sequence LIMIT ?')
+      .all(runId, afterSequence, Number(row.sequence), limit).map((item) => eventSchema.parse(JSON.parse(String(item.payload))));
     return { runId, templateId: String(row.template_id), state: row.state as RunState,
       sequence: Number(row.sequence), createdAt: String(row.created_at), updatedAt: String(row.updated_at), events };
   }

@@ -82,7 +82,7 @@ Binds to `127.0.0.1:4180`. Every request needs `Authorization: Bearer <AGENT_API
 | POST | `/v1/runs` | Admit a task and return 202 with `run_id` |
 | GET | `/v1/runs` | Most recent 50 runs for the authenticated local owner |
 | GET | `/v1/runs/:id` | State and ordered event history |
-| GET | `/v1/runs/:id/events?after=0` | Poll events after a sequence; not SSE yet |
+| GET | `/v1/runs/:id/events?after=0` | JSON polling or SSE with `Accept: text/event-stream` |
 | POST | `/v1/runs/:id/cancel` | Cancel with JSON body `{}` |
 | GET | `/v1/runs/:id/artifacts` | Unexpired evidence metadata, checksum and expiry |
 | GET | `/v1/runs/:id/artifacts/:artifactId` | Authorized checksum-verified JSON download |
@@ -91,8 +91,13 @@ POST requests require `Idempotency-Key`, 8–128 letters, digits, underscores or
 
 The coordinator holds a separate SQLite file lock, dispatches one fresh worker at a time, and interrupts old API runs on startup without resuming them. The CLI owner is separate. The 30-second deadline includes queue and browser startup time. Cancellation requests graceful worker shutdown, then escalates after two seconds. The worker receives a minimal environment without the API token. Keep the database and coordinator lock files on local storage; do not delete or replace them while running.
 
-Browser process-group cleanup on Linux is best effort; a crash during launch can occur before its PID is reported. Use container/process-group supervision and host-network restrictions for stronger isolation. The application does not supply that deployment boundary yet. Whole-history retention cleanup, SSE, approvals and dashboard are still absent. API history contains verification reason and event metadata rather than full product observations.
+Browser process-group cleanup on Linux is best effort; a crash during launch can occur before its PID is reported. Use container/process-group supervision and host-network restrictions for stronger isolation. The application does not supply that deployment boundary yet. Whole-history retention cleanup, approvals and dashboard are still absent. API history contains verification reason and event metadata rather than full product observations.
 
 Completed verification stores bounded observed product IDs/prices and the independent verifier verdict as JSON evidence, atomically with verification and terminal events. Reference answers are excluded. Evidence expires after seven days.
 
 Evidence downloads contain only typed synthetic product records and verification metadata, not DOM/network traces or privileged reference answers. IDs are UUIDs scoped to their run and owner; no filesystem paths are accepted. Downloads include `X-Content-SHA256` and `Content-Disposition: attachment`. Expired evidence returns 404. The coordinator deletes up to 100 expired payloads at startup and every minute; run verdicts and event history remain. Existing runs created before evidence support can have no artifact.
+
+
+For live events, fetch `/v1/runs/:id/events` with the normal bearer header and `Accept: text/event-stream`. Persist the numeric `id` from each `run_event` frame. Reconnect with `Last-Event-ID` (which takes precedence over `?after=`); only later persisted events are sent. A cursor ahead of the run returns 409. A terminal run with no remaining events returns 204. Otherwise the final `end` frame carries state and sequence. Reading or reconnecting never dispatches browser work.
+
+Streams have a 4 KiB backpressure buffer, 64-event read batches, eight concurrent connections per API instance, five-second heartbeat frames, and a 30-second connection lifetime. Reconnect after EOF using the last event ID; stop on `end` or 204. Disconnect and API shutdown release stream timers and listeners. Native browser `EventSource` cannot supply the required bearer header: use a fetch-based SSE client; credentials in query strings are not supported.

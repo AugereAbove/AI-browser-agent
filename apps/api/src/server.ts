@@ -1,3 +1,6 @@
+import type { Readable } from 'node:stream';
+import { eventStream } from './event-stream.ts';
+import { isTerminal } from '../../../packages/agent/src/lifecycle.ts';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import Fastify from 'fastify';
 import { z } from 'zod';
@@ -30,6 +33,8 @@ export function createApi(config: ApiConfig) {
   const app = Fastify({ logger: false, bodyLimit: 4096, requestTimeout: 10_000,
     connectionTimeout: 10_000, keepAliveTimeout: 5000, requestIdHeader: false, genReqId: () => randomUUID(),
     trustProxy: false, exposeHeadRoutes: false });
+  const streams = new Map<Readable, () => void>();
+  app.addHook('preClose', async () => { for (const close of streams.values()) close(); });
   app.addHook('onRequest', async (request, reply) => {
     reply.header('Cache-Control', 'no-store').header('X-Content-Type-Options', 'nosniff').header('X-Request-Id', request.id);
     if (request.headers.host !== origin.host) throw new ApiError(403, 'host_denied');
@@ -86,9 +91,25 @@ export function createApi(config: ApiConfig) {
     return reply.type('application/json').header('Content-Disposition', `attachment; filename="product-evidence-${artifactId}.json"`)
       .header('X-Content-SHA256', artifact.checksum).send(artifact.payload);
   });
-  app.get('/v1/runs/:id/events', async (request) => {
+  app.get('/v1/runs/:id/events', async (request, reply) => {
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
     const { after } = z.strictObject({ after: z.string().regex(/^\d{1,9}$/).default('0') }).parse(request.query);
+    const wantsStream = request.headers.accept?.split(',').some((value) => value.trim().split(';')[0] === 'text/event-stream');
+    if (wantsStream) {
+      const cursorText = z.string().regex(/^\d{1,9}$/).parse(request.headers['last-event-id'] ?? after);
+      const cursor = Number(cursorText);
+      const status = config.store.status(config.owner, id);
+      if (!status) throw new ApiError(404, 'run_not_found');
+      if (cursor > status.sequence) throw new ApiError(409, 'event_cursor_ahead');
+      if (isTerminal(status.state) && cursor === status.sequence) return reply.code(204).send();
+      if (streams.size >= 8) throw new ApiError(429, 'stream_limit');
+      const { stream, close } = eventStream(config.store, config.owner, id, cursor);
+      streams.set(stream, close);
+      const disconnect = () => { streams.delete(stream); close(); };
+      reply.raw.once('close', disconnect);
+      stream.once('close', () => { streams.delete(stream); reply.raw.removeListener('close', disconnect); });
+      return reply.type('text/event-stream; charset=utf-8').header('X-Accel-Buffering', 'no').send(stream);
+    }
     const run = config.store.get(config.owner, id, Number(after));
     if (!run) throw new ApiError(404, 'run_not_found');
     return { run_id: id, sequence: run.sequence, events: run.events };

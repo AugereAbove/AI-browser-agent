@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -43,6 +44,19 @@ test('API command serves authenticated HTTP and completes a real worker run', as
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     expect(state).toBe('succeeded');
+    const listing = await fetch(`${origin}/v1/runs/${id}/artifacts`, { headers });
+    const metadata = (await listing.json() as { artifacts: { artifact_id: string; checksum_sha256: string }[] }).artifacts[0]!;
+    const download = await fetch(`${origin}/v1/runs/${id}/artifacts/${metadata.artifact_id}`, { headers });
+    expect(download.status).toBe(200);
+    const payload = Buffer.from(await download.arrayBuffer());
+    expect(createHash('sha256').update(payload).digest('hex')).toBe(metadata.checksum_sha256);
+    expect(JSON.parse(payload.toString('utf8'))).toMatchObject({ run_id: id, verification: { verified: true, reason: 'matched' } });
+    const stream = await fetch(`${origin}/v1/runs/${id}/events`, { headers: { ...headers, accept: 'text/event-stream', 'last-event-id': '8' } });
+    expect(stream.status).toBe(200);
+    const frames = await stream.text();
+    expect(frames).toContain('id: 9\n');
+    expect(frames).not.toContain('id: 8\n');
+    expect(frames).toContain('event: end');
     expect(output).not.toContain(token);
   } finally {
     child.kill('SIGTERM');
