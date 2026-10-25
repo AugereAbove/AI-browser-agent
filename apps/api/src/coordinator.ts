@@ -14,6 +14,7 @@ export class Coordinator {
   readonly #timer: ReturnType<typeof setInterval>;
   #active: { child: ChildProcess; runId: string; deadline: number; browserPid?: number; stoppingAt?: number } | undefined;
   #closed = false;
+  #lastCleanup = Date.now();
 
   constructor(database: string, owner = 'api-local') {
     if (process.platform !== 'linux') throw new Error('API worker currently supports Linux only');
@@ -25,7 +26,7 @@ export class Coordinator {
     try {
       this.#lock.exec('BEGIN EXCLUSIVE');
       this.store = new RunStore(database);
-      try { this.store.interruptOrphans(owner); } catch (error) { this.store.close(); throw error; }
+      try { this.store.interruptOrphans(owner); this.store.pruneExpiredArtifacts(); } catch (error) { this.store.close(); throw error; }
     } catch (error) {
       this.#lock.close();
       throw error;
@@ -41,6 +42,10 @@ export class Coordinator {
   #tick() {
     if (this.#closed) return;
     try {
+      if (Date.now() - this.#lastCleanup >= 60_000) {
+        this.store.pruneExpiredArtifacts();
+        this.#lastCleanup = Date.now();
+      }
       const active = this.#active;
       if (active) {
         const run = this.store.status(this.#owner, active.runId);

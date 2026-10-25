@@ -61,7 +61,7 @@ pnpm history --database .agent/runs.sqlite --run-id <runId>
 
 The demo prints the run ID. `history` reads saved state and events without starting a browser; `--after <sequence>` reads only newer events. The local CLI uses owner `local`; it is not a network authorization layer. Only bounded task-event metadata is stored, without page text, credentials, or verifier reference answers. The API additionally stores validated synthetic product inputs and seed for worker dispatch.
 
-SQLite schema version 3 is created automatically, migrating versions 1 and 2 without deleting history using Node 24's built-in `node:sqlite`. Event insertion and state changes commit atomically; terminal runs reject additional events. Run history currently has no automatic expiry. To reset development history, stop all processes using the database and delete the database plus its `-wal` and `-shm` files.
+SQLite schema version 3 is created automatically, migrating versions 1 and 2 without deleting history using Node 24's built-in `node:sqlite`. Event insertion and state changes commit atomically; terminal runs reject additional events. Evidence payloads expire after seven days; run/event/input history currently has no automatic expiry. To reset development history, stop all processes using the database and delete the database plus its `-wal` and `-shm` files.
 
 `RunStore.interruptOrphans()` is reserved for an exclusive coordinator at startup; it marks in-flight runs interrupted and never replays browser actions. The CLI does not invoke it because another CLI may still be running. The API coordinator performs owner-scoped startup interruption and supervises its worker.
 
@@ -84,11 +84,15 @@ Binds to `127.0.0.1:4180`. Every request needs `Authorization: Bearer <AGENT_API
 | GET | `/v1/runs/:id` | State and ordered event history |
 | GET | `/v1/runs/:id/events?after=0` | Poll events after a sequence; not SSE yet |
 | POST | `/v1/runs/:id/cancel` | Cancel with JSON body `{}` |
+| GET | `/v1/runs/:id/artifacts` | Unexpired evidence metadata, checksum and expiry |
+| GET | `/v1/runs/:id/artifacts/:artifactId` | Authorized checksum-verified JSON download |
 
 POST requests require `Idempotency-Key`, 8–128 letters, digits, underscores or hyphens. Submission JSON is `{"template_id":"store-filter-v1","input":{"category":"audio","limit":3},"seed":0}`. Only the declared product query fields are accepted; clients cannot supply destinations, owners, commands or budgets. Repeating the same key and payload returns the existing run; changing the payload returns 409. Cancellation retries retain the existing terminal result. Errors contain `error.code` and a server-generated `request_id`. Request bodies are capped at 4 KiB and at most 16 runs may be outstanding per owner.
 
 The coordinator holds a separate SQLite file lock, dispatches one fresh worker at a time, and interrupts old API runs on startup without resuming them. The CLI owner is separate. The 30-second deadline includes queue and browser startup time. Cancellation requests graceful worker shutdown, then escalates after two seconds. The worker receives a minimal environment without the API token. Keep the database and coordinator lock files on local storage; do not delete or replace them while running.
 
-Browser process-group cleanup on Linux is best effort; a crash during launch can occur before its PID is reported. Use container/process-group supervision and host-network restrictions for stronger isolation. The application does not supply that deployment boundary yet. Automatic retention cleanup, artifact download endpoints, SSE, approvals and dashboard are still absent. API history contains verification reason and event metadata rather than full product observations.
+Browser process-group cleanup on Linux is best effort; a crash during launch can occur before its PID is reported. Use container/process-group supervision and host-network restrictions for stronger isolation. The application does not supply that deployment boundary yet. Whole-history retention cleanup, SSE, approvals and dashboard are still absent. API history contains verification reason and event metadata rather than full product observations.
 
 Completed verification stores bounded observed product IDs/prices and the independent verifier verdict as JSON evidence, atomically with verification and terminal events. Reference answers are excluded. Evidence expires after seven days.
+
+Evidence downloads contain only typed synthetic product records and verification metadata, not DOM/network traces or privileged reference answers. IDs are UUIDs scoped to their run and owner; no filesystem paths are accepted. Downloads include `X-Content-SHA256` and `Content-Disposition: attachment`. Expired evidence returns 404. The coordinator deletes up to 100 expired payloads at startup and every minute; run verdicts and event history remain. Existing runs created before evidence support can have no artifact.

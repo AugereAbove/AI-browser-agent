@@ -3,7 +3,7 @@ import Fastify from 'fastify';
 import { z } from 'zod';
 import { productTaskTemplate } from '../../../packages/agent/src/product-task.ts';
 import { runRequestSchema, idempotencyKeySchema } from '../../../packages/shared/src/run-request.ts';
-import { RequestConflictError, QueueFullError } from '../../../packages/storage/src/run-store.ts';
+import { RequestConflictError, QueueFullError, ArtifactIntegrityError } from '../../../packages/storage/src/run-store.ts';
 import type { RunStore } from '../../../packages/storage/src/run-store.ts';
 
 export class ApiError extends Error {
@@ -45,7 +45,7 @@ export function createApi(config: ApiConfig) {
   app.setErrorHandler((error, request, reply) => {
     const status = error instanceof RequestConflictError ? 409 : error instanceof QueueFullError ? 429 : error instanceof ApiError ? error.status : error instanceof z.ZodError ? 400 :
       typeof error === 'object' && error !== null && 'statusCode' in error && typeof error.statusCode === 'number' && error.statusCode < 500 ? error.statusCode : 500;
-    const code = error instanceof RequestConflictError ? 'idempotency_conflict' : error instanceof QueueFullError ? 'queue_full' : error instanceof ApiError ? error.code : status === 400 ? 'invalid_request' : status === 413 ? 'body_too_large' :
+    const code = error instanceof ArtifactIntegrityError ? 'artifact_integrity_error' : error instanceof RequestConflictError ? 'idempotency_conflict' : error instanceof QueueFullError ? 'queue_full' : error instanceof ApiError ? error.code : status === 400 ? 'invalid_request' : status === 413 ? 'body_too_large' :
       status === 415 ? 'unsupported_media_type' : 'internal_error';
     reply.code(status).send({ error: { code, request_id: request.id } });
   });
@@ -72,6 +72,19 @@ export function createApi(config: ApiConfig) {
     const run = config.store.get(config.owner, id);
     if (!run) throw new ApiError(404, 'run_not_found');
     return run;
+  });
+  app.get('/v1/runs/:id/artifacts', async (request) => {
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const artifacts = config.store.artifacts(config.owner, id);
+    if (!artifacts) throw new ApiError(404, 'run_not_found');
+    return { run_id: id, artifacts };
+  });
+  app.get('/v1/runs/:id/artifacts/:artifactId', async (request, reply) => {
+    const { id, artifactId } = z.object({ id: z.uuid(), artifactId: z.uuid() }).parse(request.params);
+    const artifact = config.store.artifact(config.owner, id, artifactId);
+    if (!artifact) throw new ApiError(404, 'artifact_not_found');
+    return reply.type('application/json').header('Content-Disposition', `attachment; filename="product-evidence-${artifactId}.json"`)
+      .header('X-Content-SHA256', artifact.checksum).send(artifact.payload);
   });
   app.get('/v1/runs/:id/events', async (request) => {
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);

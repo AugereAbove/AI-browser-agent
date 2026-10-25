@@ -23,6 +23,7 @@ const lifecycleEvents: RunEvent['type'][] = [
 
 export class RequestConflictError extends Error {}
 export class QueueFullError extends Error {}
+export class ArtifactIntegrityError extends Error {}
 
 export class RunStore {
   readonly #db: DatabaseSync;
@@ -163,10 +164,40 @@ export class RunStore {
     });
   }
 
+  artifacts(owner: string, runId: string) {
+    if (!this.status(owner, runId)) return null;
+    return this.#db.prepare('SELECT a.id, a.kind, a.checksum, a.created_at, a.expires_at, length(CAST(a.payload AS BLOB)) AS bytes FROM run_artifacts a JOIN runs r ON r.id = a.run_id WHERE r.owner = ? AND r.id = ? AND a.expires_at > ? ORDER BY a.created_at, a.id')
+      .all(owner, runId, Date.now()).map((row) => ({
+        artifact_id: String(row.id), kind: String(row.kind), checksum_sha256: String(row.checksum),
+        size_bytes: Number(row.bytes), created_at: new Date(Number(row.created_at)).toISOString(),
+        expires_at: new Date(Number(row.expires_at)).toISOString(),
+      }));
+  }
+
+  artifact(owner: string, runId: string, artifactId: string) {
+    const row = this.#db.prepare('SELECT a.payload, a.checksum FROM run_artifacts a JOIN runs r ON r.id = a.run_id WHERE r.owner = ? AND r.id = ? AND a.id = ? AND a.expires_at > ?')
+      .get(owner, runId, artifactId, Date.now());
+    if (!row) return null;
+    const payload = String(row.payload);
+    const checksum = createHash('sha256').update(payload).digest('hex');
+    try {
+      if (Buffer.byteLength(payload) > 16_384 || checksum !== row.checksum) throw new Error('Checksum mismatch');
+      const evidence = productEvidenceSchema.parse(JSON.parse(payload));
+      if (evidence.run_id !== runId) throw new Error('Run mismatch');
+    } catch { throw new ArtifactIntegrityError('Artifact integrity check failed'); }
+    return { payload: Buffer.from(payload), checksum };
+  }
+
   evidence(owner: string, runId: string) {
-    const row = this.#db.prepare('SELECT a.payload FROM run_artifacts a JOIN runs r ON r.id = a.run_id WHERE r.owner = ? AND r.id = ? AND a.kind = ? AND a.expires_at > ?')
-      .get(owner, runId, 'product-evidence-v1', Date.now());
-    return row ? productEvidenceSchema.parse(JSON.parse(String(row.payload))) : null;
+    const metadata = this.artifacts(owner, runId)?.[0];
+    const artifact = metadata ? this.artifact(owner, runId, metadata.artifact_id) : null;
+    return artifact ? productEvidenceSchema.parse(JSON.parse(artifact.payload.toString('utf8'))) : null;
+  }
+
+  pruneExpiredArtifacts(now = Date.now(), limit = 100) {
+    if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new Error('Invalid cleanup bounds');
+    return Number(this.#db.prepare('DELETE FROM run_artifacts WHERE id IN (SELECT id FROM run_artifacts WHERE expires_at <= ? ORDER BY expires_at, id LIMIT ?)')
+      .run(now, limit).changes);
   }
 
   status(owner: string, runId: string) {
