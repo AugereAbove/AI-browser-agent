@@ -1,3 +1,4 @@
+import { productEvidenceSchema } from '../../shared/src/product-evidence.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { runRequestSchema, idempotencyKeySchema } from '../../shared/src/run-request.ts';
 import { DatabaseSync } from 'node:sqlite';
@@ -31,13 +32,13 @@ export class RunStore {
     try {
       if (options.readOnly) {
         const version = Number(this.#db.prepare('PRAGMA user_version').get()?.user_version);
-        if (version !== 1 && version !== 2) throw new Error('Unsupported database version');
+        if (![1, 2, 3].includes(version)) throw new Error('Unsupported database version');
         return;
       }
       this.#db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL');
       this.#transaction(() => {
         const version = Number(this.#db.prepare('PRAGMA user_version').get()?.user_version);
-        if (version > 2) throw new Error('Unsupported database version');
+        if (version > 3) throw new Error('Unsupported database version');
         if (version === 0) {
           this.#db.exec(`
             CREATE TABLE runs (
@@ -67,6 +68,18 @@ export class RunStore {
             PRAGMA user_version = 2;
           `);
         }
+        if (version < 3) {
+          this.#db.exec(`
+            CREATE TABLE run_artifacts (
+              id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+              kind TEXT NOT NULL, payload TEXT NOT NULL CHECK(length(payload) <= 16384),
+              checksum TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+              UNIQUE(run_id, kind)
+            ) STRICT;
+            CREATE INDEX artifacts_expiry ON run_artifacts(expires_at);
+            PRAGMA user_version = 3;
+          `);
+        }
       });
     } catch (error) {
       this.#db.close();
@@ -94,8 +107,11 @@ export class RunStore {
   }
 
   append(runId: string, rawEvent: TaskEvent) {
+    this.#transaction(() => this.#append(runId, rawEvent));
+  }
+
+  #append(runId: string, rawEvent: TaskEvent) {
     const event = eventSchema.parse(rawEvent);
-    this.#transaction(() => {
       const row = this.#db.prepare('SELECT state, sequence FROM runs WHERE id = ?').get(runId);
       if (!row || isTerminal(row.state as RunState)) throw new Error('Run is missing or terminal');
       if (event.sequence !== Number(row.sequence) + 1) throw new Error('Event sequence must increase by one');
@@ -127,7 +143,30 @@ export class RunStore {
         .run(runId, event.sequence, JSON.stringify(event));
       this.#db.prepare('UPDATE runs SET state = ?, sequence = ?, updated_at = ? WHERE id = ?')
         .run(event.state, event.sequence, new Date().toISOString(), runId);
+  }
+
+  completeVerification(owner: string, runId: string, rawEvidence: unknown) {
+    const evidence = productEvidenceSchema.parse(rawEvidence);
+    if (evidence.run_id !== runId) throw new Error('Evidence run mismatch');
+    const payload = JSON.stringify(evidence);
+    if (Buffer.byteLength(payload) > 16_384) throw new Error('Evidence too large');
+    return this.#transaction(() => {
+      const row = this.#db.prepare('SELECT state, sequence, template_id FROM runs WHERE id = ? AND owner = ?').get(runId, owner);
+      if (!row || row.state !== 'verifying' || row.template_id !== evidence.template_id) throw new Error('Run cannot accept evidence');
+      const id = randomUUID();
+      const now = Date.now();
+      this.#db.prepare('INSERT INTO run_artifacts(id, run_id, kind, payload, checksum, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(id, runId, 'product-evidence-v1', payload, createHash('sha256').update(payload).digest('hex'), now, now + 7 * 24 * 60 * 60 * 1000);
+      this.#append(runId, { sequence: Number(row.sequence) + 1, type: 'verification', state: 'verifying', reason: evidence.verification.reason });
+      this.#append(runId, { sequence: Number(row.sequence) + 2, type: 'state_changed', state: evidence.verification.verified ? 'succeeded' : 'failed' });
+      return id;
     });
+  }
+
+  evidence(owner: string, runId: string) {
+    const row = this.#db.prepare('SELECT a.payload FROM run_artifacts a JOIN runs r ON r.id = a.run_id WHERE r.owner = ? AND r.id = ? AND a.kind = ? AND a.expires_at > ?')
+      .get(owner, runId, 'product-evidence-v1', Date.now());
+    return row ? productEvidenceSchema.parse(JSON.parse(String(row.payload))) : null;
   }
 
   status(owner: string, runId: string) {

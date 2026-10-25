@@ -37,6 +37,7 @@ function journalFor(store: RunStore) {
   return {
     start: (runId: string, templateId: string) => store.create(runId, 'local', templateId),
     append: (runId: string, event: TaskEvent) => store.append(runId, event),
+    completeVerification: (runId: string, evidence: import('../../../packages/shared/src/product-evidence.ts').ProductEvidence) => store.completeVerification('local', runId, evidence),
   };
 }
 

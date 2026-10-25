@@ -1,3 +1,4 @@
+import type { ProductEvidence } from '../../shared/src/product-evidence.ts';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { Browser } from 'playwright';
@@ -24,6 +25,7 @@ export interface ProductTaskConfig {
   readonly journal?: {
     start(runId: string, templateId: string): void;
     append(runId: string, event: TaskEvent): void;
+    completeVerification?(runId: string, evidence: ProductEvidence): void;
   };
 }
 
@@ -63,14 +65,14 @@ export async function runProductTask(
   let errorCode: string | null = null;
   let phase: 'input' | 'configuration' | 'execution' = 'input';
   const events: TaskEvent[] = [];
-  const emit = (event: Omit<TaskEvent, 'sequence' | 'state'>) => {
+  const emit = (event: Omit<TaskEvent, 'sequence' | 'state'>, persist = true) => {
     const entry = Object.freeze({ ...event, sequence: events.length + 1, state: status.state });
-    journal?.append(runId, entry);
+    if (persist) journal?.append(runId, entry);
     events.push(entry);
   };
-  const move = (event: RunEvent) => {
+  const move = (event: RunEvent, persist = true) => {
     status.state = transition(status.state, event);
-    emit({ type: 'state_changed' });
+    emit({ type: 'state_changed' }, persist);
   };
   emit({ type: 'state_changed' });
 
@@ -112,8 +114,14 @@ export async function runProductTask(
       if (signal?.aborted) throw new BudgetError('cancelled');
       move({ type: 'verification_started' });
       verdict = verifyProducts(referenceCatalog, query, records);
-      emit({ type: 'verification', reason: verdict.reason });
-      move({ type: verdict.verified ? 'verification_passed' : 'verification_failed' });
+      journal?.completeVerification?.(runId, {
+        format_version: 1, run_id: runId, template_id: 'store-filter-v1',
+        records: records.map((record) => ({ ...record })),
+        verification: { verified: verdict.verified, reason: verdict.reason },
+      });
+      const persist = journal?.completeVerification === undefined;
+      emit({ type: 'verification', reason: verdict.reason }, persist);
+      move({ type: verdict.verified ? 'verification_passed' : 'verification_failed' }, persist);
     } catch (error) {
       if (error instanceof BudgetError || error instanceof PolicyError || error instanceof SessionError) errorCode = error.code;
       else if (error instanceof z.ZodError) errorCode = phase === 'input' ? 'invalid_input' : 'invalid_configuration';

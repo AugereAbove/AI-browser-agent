@@ -169,3 +169,46 @@ test('schema v1 upgrades preserve existing runs and events', () => {
   expect(store.get('local', 'legacy')?.state).toBe('queued');
   expect(store.admit('local', 'new_request', { template_id: 'store-filter-v1', input: {} }).runId).toBeTruthy();
 });
+
+test('verification evidence and terminal events persist together after reopening', () => {
+  const path = database();
+  const store = new RunStore(path);
+  const { runId } = store.admit('api-local', 'evidence_request', { template_id: 'store-filter-v1', input: {} });
+  store.append(runId, { sequence: 2, type: 'state_changed', state: 'running' });
+  store.append(runId, { sequence: 3, type: 'state_changed', state: 'verifying' });
+  const proof = { format_version: 1, run_id: runId, template_id: 'store-filter-v1', records: [{ id: 'audio-01', priceCents: 19900 }], verification: { verified: true, reason: 'matched' } };
+  store.completeVerification('api-local', runId, proof);
+  store.close();
+  const reopened = open(path);
+  expect(reopened.status('api-local', runId)?.state).toBe('succeeded');
+  expect(reopened.evidence('api-local', runId)).toEqual(proof);
+  expect(reopened.evidence('other', runId)).toBeNull();
+  expect(reopened.get('api-local', runId)?.events.map((event) => event.sequence)).toEqual([1, 2, 3, 4, 5]);
+  expect(() => reopened.completeVerification('api-local', runId, proof)).toThrow();
+});
+
+test('a terminal write failure rolls back both evidence and verification events', () => {
+  const path = database();
+  const store = open(path);
+  const { runId } = store.admit('local', 'rollback_request', { template_id: 'store-filter-v1', input: {} });
+  store.append(runId, { sequence: 2, type: 'state_changed', state: 'running' });
+  store.append(runId, { sequence: 3, type: 'state_changed', state: 'verifying' });
+  const raw = new DatabaseSync(path);
+  raw.exec("CREATE TRIGGER fail_terminal BEFORE UPDATE ON runs WHEN NEW.state = 'succeeded' BEGIN SELECT RAISE(ABORT, 'injected write failure'); END");
+  raw.close();
+  expect(() => store.completeVerification('local', runId, { format_version: 1, run_id: runId, template_id: 'store-filter-v1', records: [], verification: { verified: true, reason: 'matched' } })).toThrow('injected write failure');
+  expect(store.status('local', runId)).toMatchObject({ state: 'verifying', sequence: 3 });
+  expect(store.evidence('local', runId)).toBeNull();
+});
+
+test('failed verification saves observed records without expected reference answers', () => {
+  const store = open();
+  const { runId } = store.admit('local', 'failed_evidence', { template_id: 'store-filter-v1', input: {} });
+  store.append(runId, { sequence: 2, type: 'state_changed', state: 'running' });
+  store.append(runId, { sequence: 3, type: 'state_changed', state: 'verifying' });
+  const proof = { format_version: 1, run_id: runId, template_id: 'store-filter-v1', records: [], verification: { verified: false, reason: 'result_mismatch' } };
+  expect(() => store.completeVerification('local', runId, { ...proof, expectedIds: ['private-answer'] })).toThrow();
+  store.completeVerification('local', runId, proof);
+  expect(store.status('local', runId)?.state).toBe('failed');
+  expect(store.evidence('local', runId)).toEqual(proof);
+});

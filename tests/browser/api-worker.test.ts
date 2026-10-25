@@ -45,6 +45,10 @@ test('API admission reaches independent verification in a separate worker', asyn
   const run = history.json();
   expect(run.events.map((event: { sequence: number }) => event.sequence)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
   expect(run.events.at(-2)).toMatchObject({ type: 'verification', reason: 'matched' });
+  expect(coordinator.store.evidence('api-local', id)).toMatchObject({
+    run_id: id, verification: { verified: true, reason: 'matched' },
+    records: [{ id: 'laptop-04', priceCents: 159900 }, { id: 'laptop-01', priceCents: 189900 }, { id: 'laptop-06', priceCents: 209900 }],
+  });
   expect(history.body).not.toContain('expectedIds');
   const repeated = await app.inject({ method: 'POST', url: '/v1/runs', headers, payload: { template_id: 'store-filter-v1', input: { category: 'laptops' } } });
   expect(repeated.json().run_id).toBe(id);

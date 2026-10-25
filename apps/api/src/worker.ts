@@ -41,6 +41,7 @@ if (!request || saved?.state !== 'queued') {
     else await runProductTask(browser, {
       runId, origin: `http://127.0.0.1:${address.port}`, referenceCatalog: createCatalog(request.seed), timeoutMs: remaining,
       journal: {
+        completeVerification(id, evidence) { store.completeVerification(owner, id, evidence); },
         start() {
           if (store.get(owner, runId)?.state !== 'queued') throw new Error('Run is no longer queued');
         },
