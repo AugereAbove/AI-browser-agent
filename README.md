@@ -61,7 +61,7 @@ pnpm history --database .agent/runs.sqlite --run-id <runId>
 
 The demo prints the run ID. `history` reads saved state and events without starting a browser; `--after <sequence>` reads only newer events. The local CLI uses owner `local`; it is not a network authorization layer. Only bounded task-event metadata is stored, without page text, credentials, or verifier reference answers. The API additionally stores validated synthetic product inputs and seed for worker dispatch.
 
-SQLite schema version 3 is created automatically, migrating versions 1 and 2 without deleting history using Node 24's built-in `node:sqlite`. Event insertion and state changes commit atomically; terminal runs reject additional events. Evidence payloads expire after seven days; run/event/input history currently has no automatic expiry. To reset development history, stop all processes using the database and delete the database plus its `-wal` and `-shm` files.
+SQLite schema version 4 is created automatically, migrating versions 1–3 without deleting history using Node 24's built-in `node:sqlite`. Event insertion and state changes commit atomically; terminal runs reject additional events. Evidence payloads expire after seven days; run/event/input history currently has no automatic expiry. To reset development history, stop all processes using the database and delete the database plus its `-wal` and `-shm` files.
 
 `RunStore.interruptOrphans()` is reserved for an exclusive coordinator at startup; it marks in-flight runs interrupted and never replays browser actions. The CLI does not invoke it because another CLI may still be running. The API coordinator performs owner-scoped startup interruption and supervises its worker.
 

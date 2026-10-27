@@ -8,7 +8,7 @@ import type { RunState, RunEvent } from '../../agent/src/lifecycle.ts';
 import type { TaskEvent } from '../../agent/src/product-task.ts';
 
 const eventSchema = z.strictObject({
-  sequence: z.number().int().min(1).max(1000),
+  sequence: z.number().int().min(1).max(1001),
   type: z.enum(['state_changed', 'action_started', 'action_completed', 'verification']),
   state: z.enum(['queued', 'running', 'awaiting_approval', 'verifying', 'succeeded', 'failed', 'denied', 'cancelled', 'timed_out', 'interrupted']),
   actionId: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/).optional(),
@@ -33,13 +33,13 @@ export class RunStore {
     try {
       if (options.readOnly) {
         const version = Number(this.#db.prepare('PRAGMA user_version').get()?.user_version);
-        if (![1, 2, 3].includes(version)) throw new Error('Unsupported database version');
+        if (![1, 2, 3, 4].includes(version)) throw new Error('Unsupported database version');
         return;
       }
       this.#db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL');
       this.#transaction(() => {
         const version = Number(this.#db.prepare('PRAGMA user_version').get()?.user_version);
-        if (version > 3) throw new Error('Unsupported database version');
+        if (version > 4) throw new Error('Unsupported database version');
         if (version === 0) {
           this.#db.exec(`
             CREATE TABLE runs (
@@ -81,6 +81,9 @@ export class RunStore {
             PRAGMA user_version = 3;
           `);
         }
+        if (version < 4) {
+          this.#db.exec('CREATE INDEX runs_owner_state_created ON runs(owner, state, created_at, id); PRAGMA user_version = 4');
+        }
       });
     } catch (error) {
       this.#db.close();
@@ -113,37 +116,38 @@ export class RunStore {
 
   #append(runId: string, rawEvent: TaskEvent) {
     const event = eventSchema.parse(rawEvent);
-      const row = this.#db.prepare('SELECT state, sequence FROM runs WHERE id = ?').get(runId);
-      if (!row || isTerminal(row.state as RunState)) throw new Error('Run is missing or terminal');
-      if (event.sequence !== Number(row.sequence) + 1) throw new Error('Event sequence must increase by one');
-      const current = row.state as RunState;
-      if (Number(row.sequence) === 0) {
-        if (event.type !== 'state_changed' || event.state !== 'queued') throw new Error('First event must be queued');
-      } else if (event.type === 'state_changed') {
-        const valid = lifecycleEvents.some((type) => {
-          try { return transition(current, { type } as RunEvent) === event.state; } catch { return false; }
-        });
-        if (!valid) throw new Error('Invalid persisted state transition');
-      } else if (event.state !== current) throw new Error('Event state does not match run');
-      if ((event.type === 'action_started' || event.type === 'action_completed') &&
-        (current !== 'running' || !event.actionId || !event.actionType || event.reason !== undefined)) {
-        throw new Error('Invalid action event');
-      }
-      if (event.type === 'verification' && (current !== 'verifying' || !event.reason || event.actionId !== undefined || event.actionType !== undefined)) {
-        throw new Error('Invalid verification event');
-      }
-      if (event.type === 'state_changed' && (event.reason !== undefined || event.actionId !== undefined || event.actionType !== undefined)) {
-        throw new Error('Invalid state event');
-      }
-      if (event.state === 'succeeded') {
-        const previous = this.#db.prepare('SELECT payload FROM run_events WHERE run_id = ? AND sequence = ?').get(runId, Number(row.sequence));
-        const evidence = previous ? eventSchema.parse(JSON.parse(String(previous.payload))) : null;
-        if (evidence?.type !== 'verification' || evidence.reason !== 'matched') throw new Error('Success requires verification evidence');
-      }
-      this.#db.prepare('INSERT INTO run_events(run_id, sequence, payload) VALUES (?, ?, ?)')
-        .run(runId, event.sequence, JSON.stringify(event));
-      this.#db.prepare('UPDATE runs SET state = ?, sequence = ?, updated_at = ? WHERE id = ?')
-        .run(event.state, event.sequence, new Date().toISOString(), runId);
+    if (event.sequence > 1000 && !isTerminal(event.state)) throw new Error('Event budget exhausted');
+    const row = this.#db.prepare('SELECT state, sequence FROM runs WHERE id = ?').get(runId);
+    if (!row || isTerminal(row.state as RunState)) throw new Error('Run is missing or terminal');
+    if (event.sequence !== Number(row.sequence) + 1) throw new Error('Event sequence must increase by one');
+    const current = row.state as RunState;
+    if (Number(row.sequence) === 0) {
+      if (event.type !== 'state_changed' || event.state !== 'queued') throw new Error('First event must be queued');
+    } else if (event.type === 'state_changed') {
+      const valid = lifecycleEvents.some((type) => {
+        try { return transition(current, { type } as RunEvent) === event.state; } catch { return false; }
+      });
+      if (!valid) throw new Error('Invalid persisted state transition');
+    } else if (event.state !== current) throw new Error('Event state does not match run');
+    if ((event.type === 'action_started' || event.type === 'action_completed') &&
+      (current !== 'running' || !event.actionId || !event.actionType || event.reason !== undefined)) {
+      throw new Error('Invalid action event');
+    }
+    if (event.type === 'verification' && (current !== 'verifying' || !event.reason || event.actionId !== undefined || event.actionType !== undefined)) {
+      throw new Error('Invalid verification event');
+    }
+    if (event.type === 'state_changed' && (event.reason !== undefined || event.actionId !== undefined || event.actionType !== undefined)) {
+      throw new Error('Invalid state event');
+    }
+    if (event.state === 'succeeded') {
+      const previous = this.#db.prepare('SELECT payload FROM run_events WHERE run_id = ? AND sequence = ?').get(runId, Number(row.sequence));
+      const evidence = previous ? eventSchema.parse(JSON.parse(String(previous.payload))) : null;
+      if (evidence?.type !== 'verification' || evidence.reason !== 'matched') throw new Error('Success requires verification evidence');
+    }
+    this.#db.prepare('INSERT INTO run_events(run_id, sequence, payload) VALUES (?, ?, ?)')
+      .run(runId, event.sequence, JSON.stringify(event));
+    this.#db.prepare('UPDATE runs SET state = ?, sequence = ?, updated_at = ? WHERE id = ?')
+      .run(event.state, event.sequence, new Date().toISOString(), runId);
   }
 
   completeVerification(owner: string, runId: string, rawEvidence: unknown) {
@@ -205,9 +209,9 @@ export class RunStore {
     return row ? { state: row.state as RunState, sequence: Number(row.sequence), createdAt: String(row.created_at) } : null;
   }
 
-  get(owner: string, runId: string, afterSequence = 0, limit = 1000) {
+  get(owner: string, runId: string, afterSequence = 0, limit = 1001) {
     if (!Number.isSafeInteger(afterSequence) || afterSequence < 0) throw new Error('Invalid event cursor');
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new Error('Invalid event limit');
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1001) throw new Error('Invalid event limit');
     const row = this.#db.prepare('SELECT * FROM runs WHERE id = ? AND owner = ?').get(runId, owner);
     if (!row) return null;
     const events = this.#db.prepare('SELECT payload FROM run_events WHERE run_id = ? AND sequence > ? AND sequence <= ? ORDER BY sequence LIMIT ?')
@@ -253,7 +257,7 @@ export class RunStore {
   }
 
   nextQueued(owner: string) {
-    const row = this.#db.prepare("SELECT id, created_at FROM runs WHERE owner = ? AND state = 'queued' AND id IN (SELECT run_id FROM run_requests WHERE owner = ?) ORDER BY created_at, id LIMIT 1").get(owner, owner);
+    const row = this.#db.prepare("SELECT id, created_at FROM runs WHERE owner = ? AND state = 'queued' AND EXISTS (SELECT 1 FROM run_requests WHERE run_id = runs.id AND owner = ?) ORDER BY created_at, id LIMIT 1").get(owner, owner);
     return row ? { runId: String(row.id), createdAt: String(row.created_at) } : null;
   }
 

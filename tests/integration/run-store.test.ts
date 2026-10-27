@@ -212,3 +212,26 @@ test('failed verification saves observed records without expected reference answ
   expect(store.status('local', runId)?.state).toBe('failed');
   expect(store.evidence('local', runId)).toEqual(proof);
 });
+
+test('a run at its event budget still has a readable terminal slot', () => {
+  const store = open();
+  const { runId } = store.admit('local', 'boundary_test', { template_id: 'store-filter-v1', input: {} });
+  store.append(runId, { sequence: 2, type: 'state_changed', state: 'running' });
+  for (let sequence = 3; sequence <= 1000; sequence++) store.append(runId, {
+    sequence, type: 'action_started', state: 'running', actionId: `a${sequence}`, actionType: 'extract',
+  });
+  expect(() => store.append(runId, { sequence: 1001, type: 'action_started', state: 'running', actionId: 'overflow', actionType: 'extract' })).toThrow('Event budget exhausted');
+  store.end('local', runId, 'cancelled');
+  expect(store.get('local', runId)?.events).toHaveLength(1001);
+  expect(store.get('local', runId, 1000)?.events).toEqual([{ sequence: 1001, type: 'state_changed', state: 'cancelled' }]);
+});
+
+test('queue lookup preserves owner, admission and ordering boundaries', () => {
+  const store = open();
+  const first = store.admit('local', 'first_queued', { template_id: 'store-filter-v1', input: {} });
+  const second = store.admit('local', 'second_queued', { template_id: 'store-filter-v1', input: {} });
+  store.create('unadmitted', 'local', 'store-filter-v1');
+  store.end('local', first.runId, 'cancelled');
+  expect(store.nextQueued('local')?.runId).toBe(second.runId);
+  expect(store.nextQueued('other')).toBeNull();
+});
