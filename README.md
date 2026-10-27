@@ -104,3 +104,15 @@ Streams have a 4 KiB backpressure buffer, 64-event read batches, eight concurren
 
 
 `ApprovalGate` is an in-memory binding primitive, not an enabled form workflow. It binds owner/run/action IDs, exact typed payload, canonical destination, affected-state digest and expiry. Decisions require a matching digest and idempotency key; claims are one-time and reject changed bindings, expiry, cancellation or clock rollback. Tickets are immutable, capped at 100 per gate, and never restored across restart. A trusted caller must supply current page state, apply origin/task policy and connect cancellation; the primitive does not inspect a page or execute actions. It is not yet connected to the worker, API or persistence. All mutating browser proposals remain denied pending the draft-permission decision.
+
+## Read scenarios
+
+`GET /v1/scenarios` returns five versioned manifests: category match, price ceiling, combined constraints, valid empty result, and stock-aware comparison. Each declares a fixture seed, supported input, read-only permission scope, budgets, verifier, evidence format and records/empty outcome. Submit a manifest's `template_id`, `input` and `seed` to the existing run endpoint; its descriptive fields are not submission parameters.
+
+```sh
+pnpm evaluate:read --output artifacts/read-evaluation.json
+```
+
+Runs three trials of each manifest with no model credentials. The report separates 12 record-result trials from three valid-empty trials and includes all declared attempts, including browser launch failures. One browser process is shared; every trial gets a fresh context and fixture. Per-trial timing includes fixture startup and cleanup; shared browser setup is reported separately and included in total elapsed time. JSON serialization and output-file writing are outside that total. Human approval time is zero for these read tasks. Reports include versions, machine details, action counts, failures and nearest-rank p50/p95. CI uploads the synthetic report for seven days.
+
+This evaluates five deterministic fixture scenarios, not model planning, the full 25-scenario benchmark, an independent false-positive audit, or the 100-run crash target. There are no provider token or cost measurements. The remaining scenario groups and consequential form workflow are not implemented.

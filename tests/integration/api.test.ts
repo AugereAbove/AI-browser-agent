@@ -103,3 +103,12 @@ test('missing idempotency keys and oversized JSON are rejected', async () => {
   expect((await app.inject({ method: 'POST', url: '/v1/runs', headers, payload: { data: 'x'.repeat(5000) } })).statusCode).toBe(413);
   expect(store.list('api-local')).toHaveLength(0);
 });
+
+test('the scenario gallery exposes supported inputs without reference answers', async () => {
+  const { app } = setup();
+  const response = await app.inject({ url: '/v1/scenarios', headers });
+  expect(response.statusCode).toBe(200);
+  expect(response.json().scenarios).toHaveLength(5);
+  expect(response.json().scenarios.every((scenario: { permission_scope: string }) => scenario.permission_scope === 'read-only-fixture')).toBe(true);
+  expect(response.body).not.toContain('expectedIds');
+});

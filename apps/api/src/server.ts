@@ -1,3 +1,4 @@
+import { readScenarios } from '../../../packages/agent/src/read-scenarios.ts';
 import type { Readable } from 'node:stream';
 import { eventStream } from './event-stream.ts';
 import { isTerminal } from '../../../packages/agent/src/lifecycle.ts';
@@ -71,6 +72,7 @@ export function createApi(config: ApiConfig) {
     return { run_id: id, state };
   });
   app.get('/v1/runs', async () => ({ runs: config.store.list(config.owner) }));
+  app.get('/v1/scenarios', async () => ({ scenarios: readScenarios }));
   app.get('/v1/templates', async () => ({ templates: [productTaskTemplate] }));
   app.get('/v1/runs/:id', async (request) => {
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);

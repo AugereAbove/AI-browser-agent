@@ -16,7 +16,8 @@
     "test:browser": "vitest run --config vitest.browser.config.ts",
     "demo": "node apps/cli/src/main.ts",
     "history": "node apps/cli/src/history.ts",
-    "dev:api": "node --env-file-if-exists=.env apps/api/src/main.ts"
+    "dev:api": "node --env-file-if-exists=.env apps/api/src/main.ts",
+    "evaluate:read": "node apps/cli/src/evaluate.ts"
   },
   "dependencies": {
     "fastify": "5.12.7",
