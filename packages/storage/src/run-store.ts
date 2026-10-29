@@ -1,3 +1,4 @@
+import { approvalBindingSchema, approvalDigest } from '../../policy/src/approval-gate.ts';
 import { productEvidenceSchema } from '../../shared/src/product-evidence.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { runRequestSchema, idempotencyKeySchema } from '../../shared/src/run-request.ts';
@@ -24,6 +25,8 @@ const lifecycleEvents: RunEvent['type'][] = [
 export class RequestConflictError extends Error {}
 export class QueueFullError extends Error {}
 export class ArtifactIntegrityError extends Error {}
+export class ApprovalConflictError extends Error {}
+export class ApprovalIntegrityError extends Error {}
 
 export class RunStore {
   readonly #db: DatabaseSync;
@@ -33,13 +36,13 @@ export class RunStore {
     try {
       if (options.readOnly) {
         const version = Number(this.#db.prepare('PRAGMA user_version').get()?.user_version);
-        if (![1, 2, 3, 4].includes(version)) throw new Error('Unsupported database version');
+        if (![1, 2, 3, 4, 5].includes(version)) throw new Error('Unsupported database version');
         return;
       }
       this.#db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL');
       this.#transaction(() => {
         const version = Number(this.#db.prepare('PRAGMA user_version').get()?.user_version);
-        if (version > 4) throw new Error('Unsupported database version');
+        if (version > 5) throw new Error('Unsupported database version');
         if (version === 0) {
           this.#db.exec(`
             CREATE TABLE runs (
@@ -84,6 +87,26 @@ export class RunStore {
         if (version < 4) {
           this.#db.exec('CREATE INDEX runs_owner_state_created ON runs(owner, state, created_at, id); PRAGMA user_version = 4');
         }
+        if (version < 5) {
+          this.#db.exec(`
+            CREATE TABLE run_approvals (
+              run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+              action_id TEXT NOT NULL, owner TEXT NOT NULL, digest TEXT NOT NULL,
+              binding TEXT NOT NULL CHECK(length(CAST(binding AS BLOB)) <= 16384),
+              status TEXT NOT NULL CHECK(status IN ('pending','approved','denied','consumed','expired','invalidated')),
+              created_at INTEGER NOT NULL, checked_at INTEGER NOT NULL,
+              decided_at INTEGER, actor TEXT, consumed_at INTEGER,
+              PRIMARY KEY(run_id, action_id)
+            ) STRICT;
+            CREATE TABLE approval_decisions (
+              owner TEXT NOT NULL, idempotency_key TEXT NOT NULL, run_id TEXT NOT NULL,
+              action_id TEXT NOT NULL, digest TEXT NOT NULL, decision TEXT NOT NULL,
+              PRIMARY KEY(owner, idempotency_key), UNIQUE(run_id, action_id),
+              FOREIGN KEY(run_id, action_id) REFERENCES run_approvals(run_id, action_id) ON DELETE CASCADE
+            ) STRICT;
+            PRAGMA user_version = 5;
+          `);
+        }
       });
     } catch (error) {
       this.#db.close();
@@ -101,6 +124,64 @@ export class RunStore {
       this.#db.exec('ROLLBACK');
       throw error;
     }
+  }
+
+  #approval(owner: string, runId: string, actionId: string) {
+    const row = this.#db.prepare('SELECT a.* FROM run_approvals a JOIN runs r ON r.id = a.run_id WHERE a.owner = ? AND r.owner = ? AND a.run_id = ? AND a.action_id = ?')
+      .get(owner, owner, runId, actionId);
+    if (!row) return null;
+    try {
+      const binding = approvalBindingSchema.parse(JSON.parse(String(row.binding)));
+      if (binding.run_id !== runId || binding.action_id !== actionId || approvalDigest(owner, binding) !== row.digest) throw new Error('Binding mismatch');
+      return { run_id: runId, action_id: actionId, digest: String(row.digest), binding,
+        status: z.enum(['pending', 'approved', 'denied', 'consumed', 'expired', 'invalidated']).parse(row.status),
+        created_at: Number(row.created_at), checked_at: Number(row.checked_at),
+        decided_at: row.decided_at === null ? null : Number(row.decided_at),
+        actor: row.actor === null ? null : String(row.actor), consumed_at: row.consumed_at === null ? null : Number(row.consumed_at) };
+    } catch { throw new ApprovalIntegrityError('Approval integrity check failed'); }
+  }
+
+  approval(owner: string, runId: string, actionId: string) {
+    const ticket = this.#approval(owner, runId, actionId);
+    if (!ticket) return null;
+    const now = Date.now();
+    if (['pending', 'approved'].includes(ticket.status)) {
+      if (!Number.isSafeInteger(now) || now < ticket.checked_at || isTerminal(this.status(owner, runId)!.state)) return { ...ticket, status: 'invalidated' as const };
+      if (now >= ticket.binding.expires_at) return { ...ticket, status: 'expired' as const };
+    }
+    return ticket;
+  }
+
+  requestApproval(owner: string, rawBinding: unknown) {
+    idSchema.parse(owner);
+    const binding = approvalBindingSchema.parse(rawBinding);
+    const payload = JSON.stringify(binding);
+    const digest = approvalDigest(owner, binding);
+    const now = Date.now();
+    if (!Number.isSafeInteger(now) || now < 0 || binding.expires_at <= now || binding.expires_at > now + 300_000) throw new ApprovalConflictError('Invalid approval expiry');
+    if (Buffer.byteLength(payload) > 16_384) throw new ApprovalConflictError('Approval payload too large');
+    const result = this.#transaction(() => {
+      const existing = this.#approval(owner, binding.run_id, binding.action_id);
+      if (existing) {
+        if (existing.digest === digest) return { ticket: this.approval(owner, binding.run_id, binding.action_id)!, conflict: false };
+        this.#invalidateApprovals(binding.run_id);
+        return { ticket: existing, conflict: true };
+      }
+      const run = this.status(owner, binding.run_id);
+      if (!run || run.state !== 'running' || run.sequence >= 999) throw new ApprovalConflictError('Run cannot request approval');
+      const count = this.#db.prepare('SELECT count(*) AS total FROM run_approvals WHERE run_id = ?').get(binding.run_id);
+      if (Number(count?.total) >= 100) throw new ApprovalConflictError('Approval budget exhausted');
+      this.#db.prepare("INSERT INTO run_approvals(run_id, action_id, owner, digest, binding, status, created_at, checked_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)")
+        .run(binding.run_id, binding.action_id, owner, digest, payload, now, now);
+      this.#append(binding.run_id, { sequence: run.sequence + 1, type: 'state_changed', state: 'awaiting_approval' });
+      return { ticket: this.#approval(owner, binding.run_id, binding.action_id)!, conflict: false };
+    });
+    if (result.conflict) throw new ApprovalConflictError('Action binding changed');
+    return result.ticket;
+  }
+
+  #invalidateApprovals(runId: string) {
+    this.#db.prepare("UPDATE run_approvals SET status = 'invalidated' WHERE run_id = ? AND status IN ('pending', 'approved')").run(runId);
   }
 
   create(runId: string, owner: string, templateId: string) {
@@ -148,6 +229,7 @@ export class RunStore {
       .run(runId, event.sequence, JSON.stringify(event));
     this.#db.prepare('UPDATE runs SET state = ?, sequence = ?, updated_at = ? WHERE id = ?')
       .run(event.state, event.sequence, new Date().toISOString(), runId);
+    if (isTerminal(event.state)) this.#invalidateApprovals(runId);
   }
 
   completeVerification(owner: string, runId: string, rawEvidence: unknown) {
@@ -275,6 +357,7 @@ export class RunStore {
       .run(runId, sequence, JSON.stringify({ sequence, type: 'state_changed', state: next }));
     this.#db.prepare('UPDATE runs SET state = ?, sequence = ?, updated_at = ? WHERE id = ?')
       .run(next, sequence, new Date().toISOString(), runId);
+    this.#invalidateApprovals(runId);
     return next;
   }
 
@@ -295,6 +378,7 @@ export class RunStore {
       const rows = this.#db.prepare("SELECT id, sequence FROM runs WHERE state IN ('queued', 'running', 'awaiting_approval', 'verifying') AND (? IS NULL OR owner = ?)").all(owner ?? null, owner ?? null);
       const now = new Date().toISOString();
       for (const row of rows) {
+        this.#invalidateApprovals(String(row.id));
         const sequence = Number(row.sequence) + 1;
         this.#db.prepare('INSERT INTO run_events(run_id, sequence, payload) VALUES (?, ?, ?)')
           .run(String(row.id), sequence, JSON.stringify({ sequence, type: 'state_changed', state: 'interrupted' }));
