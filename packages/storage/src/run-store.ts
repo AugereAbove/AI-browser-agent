@@ -159,6 +159,18 @@ export class RunStore {
     return this.#transaction(() => this.#refreshApproval(owner, runId, actionId));
   }
 
+  approvals(owner: string, runId: string) {
+    return this.#transaction(() => {
+      if (!this.status(owner, runId)) return null;
+      return this.#db.prepare('SELECT action_id FROM run_approvals WHERE owner = ? AND run_id = ? ORDER BY created_at, action_id LIMIT 100')
+        .all(owner, runId).map((row) => {
+          const ticket = this.#refreshApproval(owner, runId, String(row.action_id))!;
+          const { binding, ...metadata } = ticket;
+          return { ...metadata, action_type: binding.action.type, destination: binding.destination, expires_at: binding.expires_at };
+        });
+    });
+  }
+
   decideApproval(owner: string, runId: string, actionId: string, rawDecision: unknown, key: string) {
     idempotencyKeySchema.parse(key);
     const decision = approvalDecisionSchema.parse(rawDecision);

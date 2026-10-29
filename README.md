@@ -2,7 +2,7 @@
 
 A browser automation runtime for bounded tasks and independently verified results.
 
-Includes validated action/task schemas, run lifecycle rules, fixture read policies, action/request budgets, isolated read-only browser sessions, a seeded storefront, and a deterministic product task runner with independent verification. Includes a local authenticated API and a separate browser worker. The dashboard, approval service, and model integration are not implemented yet.
+Includes validated action/task schemas, run lifecycle rules, fixture read policies, action/request budgets, isolated read-only browser sessions, a seeded storefront, and a deterministic product task runner with independent verification. Includes a local authenticated API and a separate browser worker. Durable synthetic approval records and authenticated decisions are available; the dashboard, form execution and model integration are not implemented yet.
 
 ## Setup
 
@@ -35,7 +35,7 @@ The test filters products through labeled form controls, extracts results, and p
 `openReadSession(browser, policy, budget, signal?)` creates a fresh browser context and exposes only `execute(action)` and `close()`. The caller owns the browser process.
 
 - `ReadPolicy` takes application-defined grants such as `[{ origin: "http://127.0.0.1:4173", paths: ["/"] }]`. Only literal loopback HTTP origins are supported. Planner output cannot change these grants.
-- Supported actions are `navigate`, `extract`, and `waitFor`. Clicks, fills, and selections are denied until an approval implementation exists.
+- Supported actions are `navigate`, `extract`, and `waitFor`. Clicks, fills, and selections remain denied; approval tickets are not connected to browser execution.
 - Each action needs a unique ID. `RunBudget` limits actions, outbound requests, wait duration, total session duration, and extracted text.
 - Redirects are rejected before following them. Only main-document HTML requests are served; scripts, frames, downloads, and WebSockets are disabled or blocked.
 - An `AbortSignal`, deadline, failed action, or explicit `close()` closes the context. Close sessions in a `finally` block.
@@ -61,7 +61,7 @@ pnpm history --database .agent/runs.sqlite --run-id <runId>
 
 The demo prints the run ID. `history` reads saved state and events without starting a browser; `--after <sequence>` reads only newer events. The local CLI uses owner `local`; it is not a network authorization layer. Only bounded task-event metadata is stored, without page text, credentials, or verifier reference answers. The API additionally stores validated synthetic product inputs and seed for worker dispatch.
 
-SQLite schema version 4 is created automatically, migrating versions 1–3 without deleting history using Node 24's built-in `node:sqlite`. Event insertion and state changes commit atomically; terminal runs reject additional events. Evidence payloads expire after seven days; run/event/input history currently has no automatic expiry. To reset development history, stop all processes using the database and delete the database plus its `-wal` and `-shm` files.
+SQLite schema version 5 is created automatically, migrating versions 1–4 without deleting history using Node 24's built-in `node:sqlite`. Event insertion and state changes commit atomically; terminal runs reject additional events. Evidence payloads expire after seven days; run/event/input history currently has no automatic expiry. To reset development history, stop all processes using the database and delete the database plus its `-wal` and `-shm` files.
 
 `RunStore.interruptOrphans()` is reserved for an exclusive coordinator at startup; it marks in-flight runs interrupted and never replays browser actions. The CLI does not invoke it because another CLI may still be running. The API coordinator performs owner-scoped startup interruption and supervises its worker.
 
@@ -91,7 +91,7 @@ POST requests require `Idempotency-Key`, 8–128 letters, digits, underscores or
 
 The coordinator holds a separate SQLite file lock, dispatches one fresh worker at a time, and interrupts old API runs on startup without resuming them. The CLI owner is separate. The 30-second deadline includes queue and browser startup time. Cancellation requests graceful worker shutdown, then escalates after two seconds. The worker receives a minimal environment without the API token. Keep the database and coordinator lock files on local storage; do not delete or replace them while running.
 
-Browser process-group cleanup on Linux is best effort; a crash during launch can occur before its PID is reported. Use container/process-group supervision and host-network restrictions for stronger isolation. The application does not supply that deployment boundary yet. Whole-history retention cleanup, approvals and dashboard are still absent. API history contains verification reason and event metadata rather than full product observations.
+Browser process-group cleanup on Linux is best effort; a crash during launch can occur before its PID is reported. Use container/process-group supervision and host-network restrictions for stronger isolation. The application does not supply that deployment boundary yet. Whole-history retention cleanup, executable approval workflows and dashboard are still absent. API history contains verification reason and event metadata rather than full product observations.
 
 Completed verification stores bounded observed product IDs/prices and the independent verifier verdict as JSON evidence, atomically with verification and terminal events. Reference answers are excluded. Evidence expires after seven days.
 
@@ -103,7 +103,7 @@ For live events, fetch `/v1/runs/:id/events` with the normal bearer header and `
 Streams have a 4 KiB backpressure buffer, 64-event read batches, eight concurrent connections per API instance, five-second heartbeat frames, and a 30-second connection lifetime. Reconnect after EOF using the last event ID; stop on `end` or 204. Disconnect and API shutdown release stream timers and listeners. Native browser `EventSource` cannot supply the required bearer header: use a fetch-based SSE client; credentials in query strings are not supported.
 
 
-`ApprovalGate` is an in-memory binding primitive, not an enabled form workflow. It binds owner/run/action IDs, exact typed payload, canonical destination, affected-state digest and expiry. Decisions require a matching digest and idempotency key; claims are one-time and reject changed bindings, expiry, cancellation or clock rollback. Tickets are immutable, capped at 100 per gate, and never restored across restart. A trusted caller must supply current page state, apply origin/task policy and connect cancellation; the primitive does not inspect a page or execute actions. It is not yet connected to the worker, API or persistence. All mutating browser proposals remain denied pending the draft-permission decision.
+`ApprovalGate` is an in-memory binding primitive, not an enabled form workflow. It binds owner/run/action IDs, exact typed payload, canonical destination, affected-state digest and expiry. Decisions require a matching digest and idempotency key; claims are one-time and reject changed bindings, expiry, cancellation or clock rollback. Tickets are immutable, capped at 100 per gate, and never restored across restart. A trusted caller must supply current page state, apply origin/task policy and connect cancellation; the primitive does not inspect a page or execute actions. The in-memory gate is separate from the durable `RunStore` methods below; neither is connected to browser mutation execution. All mutating browser proposals remain denied pending the draft-permission decision.
 
 ## Read scenarios
 
@@ -120,3 +120,5 @@ This evaluates five deterministic fixture scenarios, not model planning, the ful
 Approval bindings can be journaled through the trusted `RunStore.requestApproval` API. Schema 5 stores a bounded synthetic action snapshot and digest with its owner/run/action, and atomically enters `awaiting_approval`. Cancellation, terminal events and exclusive startup recovery invalidate outstanding tickets. These records do not enable browser writes; real data and secrets must not be supplied to this synthetic-only interface.
 
 `decideApproval` records an owner-attributed, idempotent decision. Approval leaves the run waiting; only `claimApproval` with an identical current binding atomically consumes the ticket and resumes `running`. Denial and its terminal event commit together. Claims are serialized across database connections and never retried automatically. Expiry or an observed clock rollback is irreversible; exclusive coordinator recovery interrupts waiting runs and invalidates grants. A reopened database alone is not recovery: its coordinator must acquire ownership and call `interruptOrphans` before dispatch. Expired or changed tickets cannot resume a run, which remains subject to cancellation/deadline handling. No browser effect is performed by these methods.
+
+Authenticated approval endpoints: `GET /v1/runs/:id/approvals` lists at most 100 metadata records without action values; `GET /v1/runs/:id/approvals/:action_id` returns the exact synthetic binding. `POST` to that action endpoint accepts only `{ "decision": "approve" | "deny", "digest": "<sha256>" }` and requires `Idempotency-Key`. The actor is the server-configured owner, never a client field. These routes share bearer, Host, Origin and cross-site protections. Changed decisions/keys or stale digests return 409; wrong owners receive 404. Decisions do not execute or claim an action. Only a trusted coordinator can request and claim tickets after rechecking task/origin policy and current state. Current read workers do neither, so normal product runs have no approval tickets. There is no HTTP request/claim endpoint and no enabled form workflow.
