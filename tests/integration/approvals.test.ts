@@ -74,3 +74,93 @@ test('rejects wrong owners, terminal runs, invalid expiry', () => {
   store.end('local', binding.run_id, 'cancelled');
   expect(() => store.requestApproval('local', binding)).toThrow();
 });
+
+test('approved claim is durable and one-time across two database connections', () => {
+  const file = path(); const store = open(file); const binding = setup(store);
+  const ticket = store.requestApproval('local', binding);
+  const decision = { decision: 'approve', digest: ticket.digest };
+  expect(store.decideApproval('local', binding.run_id, 'send', decision, 'approve-1')?.actor).toBe('local');
+  expect(store.status('local', binding.run_id)?.state).toBe('awaiting_approval');
+  const other = open(file);
+  expect(other.decideApproval('local', binding.run_id, 'send', decision, 'approve-1')?.status).toBe('approved');
+  expect(other.claimApproval('local', binding.run_id, 'send', binding)).toEqual(binding);
+  expect(store.claimApproval('local', binding.run_id, 'send', binding)).toBeNull();
+  expect(store.approval('local', binding.run_id, 'send')?.consumed_at).toBeTypeOf('number');
+  expect(store.status('local', binding.run_id)?.state).toBe('running');
+  expect(store.decideApproval('local', binding.run_id, 'send', decision, 'approve-1')?.status).toBe('consumed');
+});
+
+test('denial and terminal event commit together with idempotent decision receipts', () => {
+  const store = open(); const binding = setup(store); const ticket = store.requestApproval('local', binding);
+  const decision = { decision: 'deny', digest: ticket.digest };
+  store.decideApproval('local', binding.run_id, 'send', decision, 'decision-1');
+  expect(store.status('local', binding.run_id)?.state).toBe('denied');
+  expect(store.decideApproval('local', binding.run_id, 'send', decision, 'decision-1')?.status).toBe('denied');
+  expect(() => store.decideApproval('local', binding.run_id, 'send', { ...decision, decision: 'approve' }, 'decision-1')).toThrow('key conflict');
+  expect(() => store.decideApproval('local', binding.run_id, 'send', decision, 'decision-2')).toThrow('stale');
+  expect(store.claimApproval('local', binding.run_id, 'send', binding)).toBeNull();
+});
+
+test.each(['destination', 'state_digest', 'action', 'expires_at'] as const)('changed %s invalidates approved claim permanently', (field) => {
+  const store = open(); const binding = setup(store); const ticket = store.requestApproval('local', binding);
+  store.decideApproval('local', binding.run_id, 'send', { decision: 'approve', digest: ticket.digest }, 'decision-1');
+  const changed = { ...binding, [field]: field === 'destination' ? 'https://example.com/' : field === 'state_digest' ? 'b'.repeat(64) : field === 'expires_at' ? binding.expires_at + 1 : { ...binding.action, target: { by: 'label', name: 'Other' } } };
+  expect(store.claimApproval('local', binding.run_id, 'send', changed)).toBeNull();
+  expect(store.claimApproval('local', binding.run_id, 'send', binding)).toBeNull();
+  expect(store.approval('local', binding.run_id, 'send')?.status).toBe('invalidated');
+});
+
+test('expiry and observed clock rollback invalidate grants irreversibly', () => {
+  vi.useFakeTimers(); vi.setSystemTime(1_800_000_000_000);
+  const store = open(); const binding = setup(store); const ticket = store.requestApproval('local', binding);
+  vi.setSystemTime(binding.expires_at);
+  expect(() => store.decideApproval('local', binding.run_id, 'send', { decision: 'approve', digest: ticket.digest }, 'decision-1')).toThrow('stale');
+  vi.setSystemTime(binding.expires_at - 10_000);
+  expect(store.approval('local', binding.run_id, 'send')?.status).toBe('expired');
+  const second = setup(store); store.requestApproval('local', second);
+  vi.setSystemTime(Date.now() - 1);
+  expect(store.approval('local', second.run_id, 'send')?.status).toBe('invalidated');
+  vi.setSystemTime(Date.now() + 100);
+  expect(store.approval('local', second.run_id, 'send')?.status).toBe('invalidated');
+});
+
+test('wrong digest and owner cannot decide or claim, approved grants do not survive recovery', () => {
+  const store = open(); const binding = setup(store); const ticket = store.requestApproval('local', binding);
+  expect(store.decideApproval('other', binding.run_id, 'send', { decision: 'approve', digest: ticket.digest }, 'decision-1')).toBeNull();
+  expect(() => store.decideApproval('local', binding.run_id, 'send', { decision: 'approve', digest: 'b'.repeat(64) }, 'decision-1')).toThrow();
+  store.decideApproval('local', binding.run_id, 'send', { decision: 'approve', digest: ticket.digest }, 'decision-1');
+  expect(store.claimApproval('other', binding.run_id, 'send', binding)).toBeNull();
+  store.interruptOrphans('local');
+  expect(store.claimApproval('local', binding.run_id, 'send', binding)).toBeNull();
+});
+
+test('claim failure rolls consumption and running event back together', () => {
+  const file = path(); const store = open(file); const binding = setup(store); const ticket = store.requestApproval('local', binding);
+  store.decideApproval('local', binding.run_id, 'send', { decision: 'approve', digest: ticket.digest }, 'decision-1');
+  const raw = new DatabaseSync(file);
+  raw.exec("CREATE TRIGGER reject_resume BEFORE UPDATE ON runs WHEN NEW.state = 'running' BEGIN SELECT RAISE(ABORT, 'injected'); END");
+  expect(() => store.claimApproval('local', binding.run_id, 'send', binding)).toThrow('injected');
+  expect(store.approval('local', binding.run_id, 'send')?.status).toBe('approved');
+  expect(store.status('local', binding.run_id)?.state).toBe('awaiting_approval'); raw.close();
+});
+
+test('denial failure rolls decision receipt and ticket back with the terminal event', () => {
+  const file = path(); const store = open(file); const binding = setup(store); const ticket = store.requestApproval('local', binding);
+  const raw = new DatabaseSync(file);
+  raw.exec("CREATE TRIGGER reject_deny BEFORE UPDATE ON runs WHEN NEW.state = 'denied' BEGIN SELECT RAISE(ABORT, 'injected'); END");
+  const decision = { decision: 'deny', digest: ticket.digest };
+  expect(() => store.decideApproval('local', binding.run_id, 'send', decision, 'decision-1')).toThrow('injected');
+  expect(store.approval('local', binding.run_id, 'send')?.status).toBe('pending');
+  expect(raw.prepare('SELECT count(*) AS total FROM approval_decisions').get()?.total).toBe(0);
+  raw.exec('DROP TRIGGER reject_deny');
+  expect(store.decideApproval('local', binding.run_id, 'send', decision, 'decision-1')?.status).toBe('denied'); raw.close();
+});
+
+test('corrupted binding cannot be read, decided or consumed', () => {
+  const file = path(); const store = open(file); const binding = setup(store); const ticket = store.requestApproval('local', binding);
+  const raw = new DatabaseSync(file);
+  raw.prepare('UPDATE run_approvals SET binding = ?').run(JSON.stringify({ ...binding, state_digest: 'b'.repeat(64) }));
+  expect(() => store.approval('local', binding.run_id, 'send')).toThrow('integrity');
+  expect(() => store.decideApproval('local', binding.run_id, 'send', { decision: 'approve', digest: ticket.digest }, 'decision-1')).toThrow('integrity');
+  expect(() => store.claimApproval('local', binding.run_id, 'send', binding)).toThrow('integrity'); raw.close();
+});

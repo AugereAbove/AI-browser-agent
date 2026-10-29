@@ -1,4 +1,4 @@
-import { approvalBindingSchema, approvalDigest } from '../../policy/src/approval-gate.ts';
+import { approvalBindingSchema, approvalDecisionSchema, approvalDigest } from '../../policy/src/approval-gate.ts';
 import { productEvidenceSchema } from '../../shared/src/product-evidence.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { runRequestSchema, idempotencyKeySchema } from '../../shared/src/run-request.ts';
@@ -141,15 +141,65 @@ export class RunStore {
     } catch { throw new ApprovalIntegrityError('Approval integrity check failed'); }
   }
 
-  approval(owner: string, runId: string, actionId: string) {
+  #refreshApproval(owner: string, runId: string, actionId: string) {
     const ticket = this.#approval(owner, runId, actionId);
     if (!ticket) return null;
     const now = Date.now();
+    if (!Number.isSafeInteger(now) || now < 0) throw new ApprovalConflictError('Invalid approval clock');
     if (['pending', 'approved'].includes(ticket.status)) {
-      if (!Number.isSafeInteger(now) || now < ticket.checked_at || isTerminal(this.status(owner, runId)!.state)) return { ...ticket, status: 'invalidated' as const };
-      if (now >= ticket.binding.expires_at) return { ...ticket, status: 'expired' as const };
+      if (now < ticket.checked_at || this.status(owner, runId)?.state !== 'awaiting_approval') ticket.status = 'invalidated';
+      else if (now >= ticket.binding.expires_at) ticket.status = 'expired';
     }
+    this.#db.prepare('UPDATE run_approvals SET status = ?, checked_at = ? WHERE run_id = ? AND action_id = ?')
+      .run(ticket.status, Math.max(now, ticket.checked_at), runId, actionId);
     return ticket;
+  }
+
+  approval(owner: string, runId: string, actionId: string) {
+    return this.#transaction(() => this.#refreshApproval(owner, runId, actionId));
+  }
+
+  decideApproval(owner: string, runId: string, actionId: string, rawDecision: unknown, key: string) {
+    idempotencyKeySchema.parse(key);
+    const decision = approvalDecisionSchema.parse(rawDecision);
+    const result = this.#transaction(() => {
+      const ticket = this.#refreshApproval(owner, runId, actionId);
+      if (!ticket) return { ticket: null, conflict: false };
+      const receipt = this.#db.prepare('SELECT * FROM approval_decisions WHERE owner = ? AND idempotency_key = ?').get(owner, key);
+      if (receipt) {
+        if (receipt.run_id !== runId || receipt.action_id !== actionId || receipt.digest !== decision.digest || receipt.decision !== decision.decision) throw new RequestConflictError('Approval decision key conflict');
+        return { ticket, conflict: false };
+      }
+      const previous = this.#db.prepare('SELECT 1 FROM approval_decisions WHERE run_id = ? AND action_id = ?').get(runId, actionId);
+      if (previous || ticket.status !== 'pending' || ticket.digest !== decision.digest) return { ticket, conflict: true };
+      const now = Date.now();
+      const run = this.status(owner, runId)!;
+      if (run.sequence >= 1000) return { ticket, conflict: true };
+      this.#db.prepare('INSERT INTO approval_decisions(owner, idempotency_key, run_id, action_id, digest, decision) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(owner, key, runId, actionId, decision.digest, decision.decision);
+      this.#db.prepare('UPDATE run_approvals SET status = ?, decided_at = ?, actor = ? WHERE run_id = ? AND action_id = ?')
+        .run(decision.decision === 'approve' ? 'approved' : 'denied', now, owner, runId, actionId);
+      if (decision.decision === 'deny') this.#append(runId, { sequence: run.sequence + 1, type: 'state_changed', state: 'denied' });
+      return { ticket: this.#approval(owner, runId, actionId), conflict: false };
+    });
+    if (result.conflict) throw new ApprovalConflictError('Approval decision is stale or mismatched');
+    return result.ticket;
+  }
+
+  claimApproval(owner: string, runId: string, actionId: string, rawCurrentBinding: unknown) {
+    return this.#transaction(() => {
+      const ticket = this.#refreshApproval(owner, runId, actionId);
+      if (ticket?.status !== 'approved') return null;
+      let matches = false;
+      try { matches = approvalDigest(owner, rawCurrentBinding) === ticket.digest; } catch { matches = false; }
+      if (!matches) { this.#invalidateApprovals(runId); return null; }
+      const run = this.status(owner, runId)!;
+      if (run.sequence >= 1000) { this.#invalidateApprovals(runId); return null; }
+      this.#db.prepare("UPDATE run_approvals SET status = 'consumed', consumed_at = ? WHERE run_id = ? AND action_id = ?")
+        .run(Date.now(), runId, actionId);
+      this.#append(runId, { sequence: run.sequence + 1, type: 'state_changed', state: 'running' });
+      return ticket.binding;
+    });
   }
 
   requestApproval(owner: string, rawBinding: unknown) {
@@ -163,7 +213,7 @@ export class RunStore {
     const result = this.#transaction(() => {
       const existing = this.#approval(owner, binding.run_id, binding.action_id);
       if (existing) {
-        if (existing.digest === digest) return { ticket: this.approval(owner, binding.run_id, binding.action_id)!, conflict: false };
+        if (existing.digest === digest) return { ticket: this.#refreshApproval(owner, binding.run_id, binding.action_id)!, conflict: false };
         this.#invalidateApprovals(binding.run_id);
         return { ticket: existing, conflict: true };
       }

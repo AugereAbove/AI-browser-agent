@@ -17,6 +17,8 @@ export const approvalBindingSchema = z.strictObject({
   expires_at: z.number().int().nonnegative(),
 }).refine((binding) => binding.action_id === binding.action.id, 'Action ID mismatch');
 
+export const approvalDecisionSchema = z.strictObject({ decision: z.enum(['approve', 'deny']), digest: z.string().regex(/^[a-f0-9]{64}$/) });
+
 export type ApprovalBinding = z.infer<typeof approvalBindingSchema>;
 type Status = 'pending' | 'approved' | 'denied' | 'consumed' | 'expired' | 'invalidated';
 interface Ticket {
@@ -107,7 +109,7 @@ export class ApprovalGate {
   decide(owner: string, id: string, rawDecision: unknown, key: string) {
     const now = this.#now();
     idempotencyKeySchema.parse(key);
-    const decision = z.strictObject({ decision: z.enum(['approve', 'deny']), digest: z.string().regex(/^[a-f0-9]{64}$/) }).parse(rawDecision);
+    const decision = approvalDecisionSchema.parse(rawDecision);
     const ticket = this.#ticket(owner, id, now);
     const receiptKey = canonical([owner, key]);
     const receiptDigest = createHash('sha256').update(canonical([id, decision])).digest('hex');
