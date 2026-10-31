@@ -32,7 +32,9 @@ test('authenticated review shows exact synthetic action and decision records ser
   expect(response.statusCode).toBe(200);
   expect(response.json()).toMatchObject({ status: 'approved', actor: 'api-local', consumed_at: null });
   expect(store.status('api-local', binding.run_id)?.state).toBe('awaiting_approval');
-  expect((await app.inject({ method: 'POST', url, headers, payload })).json()).toEqual(response.json());
+  const repeated = (await app.inject({ method: 'POST', url, headers, payload })).json();
+  expect(repeated).toEqual({ ...response.json(), checked_at: repeated.checked_at });
+  expect(repeated.checked_at).toBeGreaterThanOrEqual(response.json().checked_at);
   expect((await app.inject({ method: 'POST', url, headers, payload: { ...payload, decision: 'deny' } })).statusCode).toBe(409);
 });
 

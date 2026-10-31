@@ -164,3 +164,24 @@ test('corrupted binding cannot be read, decided or consumed', () => {
   expect(() => store.decideApproval('local', binding.run_id, 'send', { decision: 'approve', digest: ticket.digest }, 'decision-1')).toThrow('integrity');
   expect(() => store.claimApproval('local', binding.run_id, 'send', binding)).toThrow('integrity'); raw.close();
 });
+
+test('conflicting decision cannot roll back an observed clock rollback and revive a grant', () => {
+  vi.useFakeTimers(); vi.setSystemTime(1_800_000_000_000);
+  const store = open(); const binding = setup(store); const ticket = store.requestApproval('local', binding);
+  store.decideApproval('local', binding.run_id, 'send', { decision: 'approve', digest: ticket.digest }, 'decision-1');
+  vi.setSystemTime(Date.now() - 1000);
+  expect(() => store.decideApproval('local', binding.run_id, 'send', { decision: 'deny', digest: ticket.digest }, 'decision-1')).toThrow('key conflict');
+  vi.setSystemTime(Date.now() + 2000);
+  expect(store.claimApproval('local', binding.run_id, 'send', binding)).toBeNull();
+  expect(store.approval('local', binding.run_id, 'send')?.status).toBe('invalidated');
+});
+
+test('completed approval reads preserve the final check timestamp', () => {
+  vi.useFakeTimers(); vi.setSystemTime(1_800_000_000_000);
+  const store = open(); const binding = setup(store); const ticket = store.requestApproval('local', binding);
+  store.decideApproval('local', binding.run_id, 'send', { decision: 'approve', digest: ticket.digest }, 'decision-1');
+  store.claimApproval('local', binding.run_id, 'send', binding);
+  const completed = store.approval('local', binding.run_id, 'send');
+  vi.setSystemTime(Date.now() + 1000);
+  expect(store.approval('local', binding.run_id, 'send')).toEqual(completed);
+});
