@@ -12,15 +12,25 @@ async function port() {
   if (!address || typeof address === 'string') throw new Error('No loopback address');
   return address.port;
 }
+async function serve(store: RunStore, token: string, submissions = false) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const bind = await port();
+    const origin = `http://127.0.0.1:${bind}`;
+    const app = createApi({ token, origin, owner: 'local', store, dashboard: true, submissions });
+    try { await app.listen({ host: '127.0.0.1', port: bind }); return { app, origin }; }
+    catch (error) {
+      await app.close();
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 'EADDRINUSE') throw error;
+    }
+  }
+  throw new Error('No available loopback port');
+}
 test('dashboard authenticates, starts a read task, follows new events and cancels without replay', async () => {
   const token = 'a'.repeat(48);
-  const bind = await port();
-  const origin = `http://127.0.0.1:${bind}`;
   const store = new RunStore(':memory:');
-  const app = createApi({ token, origin, owner: 'local', store, dashboard: true, submissions: true });
-  const browser = await launchBrowser();
+  const { app, origin } = await serve(store, token, true);
+  const browser = await launchBrowser().catch(async error => { await app.close(); store.close(); throw error; });
   try {
-    await app.listen({ host: '127.0.0.1', port: bind });
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
     page.setDefaultTimeout(5000);
     await page.goto(origin);
@@ -42,5 +52,41 @@ test('dashboard authenticates, starts a read task, follows new events and cancel
     await page.getByRole('button', { name: 'Disconnect' }).click();
     expect(await page.getByLabel('API key').inputValue()).toBe('');
     expect(await detail.count()).toBe(0);
+  } finally { await browser.close(); await app.close(); store.close(); }
+});
+
+test('dashboard checks evidence bytes before displaying or downloading them', async () => {
+  const token = 'a'.repeat(48);
+  const store = new RunStore(':memory:');
+  const { app, origin } = await serve(store, token);
+  const browser = await launchBrowser().catch(async error => { await app.close(); store.close(); throw error; });
+  try {
+    const { runId } = store.admit('local', 'evidence-run', { template_id: 'store-filter-v1', input: {} });
+    store.append(runId, { sequence: 2, type: 'state_changed', state: 'running' });
+    store.append(runId, { sequence: 3, type: 'state_changed', state: 'verifying' });
+    store.completeVerification('local', runId, { format_version: 1, run_id: runId, template_id: 'store-filter-v1',
+      records: [{ id: 'laptop-01', priceCents: 125000 }], verification: { verified: true, reason: 'matched' } });
+    const page = await browser.newPage();
+    page.setDefaultTimeout(5000);
+    await page.goto(origin);
+    await page.getByLabel('API key').fill(token);
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await page.locator('.history-row').filter({ hasText: runId }).click();
+    const path = '**/artifacts/*';
+    await page.route(path, async route => {
+      const response = await route.fetch();
+      await route.fulfill({ response, body: (await response.text()).replace('laptop-01', 'laptop-02') });
+    });
+    const inspect = page.getByRole('button', { name: 'Inspect evidence' });
+    await inspect.click();
+    await page.getByRole('alert').filter({ hasText: 'evidence integrity error' }).waitFor();
+    expect(await page.getByRole('button', { name: 'Download verified JSON' }).count()).toBe(0);
+    await page.unroute(path);
+    await inspect.click();
+    await page.getByText('laptop-01 · 1250.00 PLN').waitFor();
+    const download = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Download verified JSON' }).click();
+    expect((await download).suggestedFilename()).toBe(`product-evidence-${runId}.json`);
+    expect(store.list('local')).toHaveLength(1);
   } finally { await browser.close(); await app.close(); store.close(); }
 });
