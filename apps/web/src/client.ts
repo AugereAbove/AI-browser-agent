@@ -11,6 +11,15 @@ export const eventSchema = z.object({ sequence: z.number().int().min(1).max(1001
   actionId: z.string().max(80).optional(), actionType: z.enum(['navigate', 'extract']).optional(), reason: z.string().max(80).optional() });
 export const runSchema = z.object({ runId: id, templateId: z.string().max(80), state, sequence: z.number().int().min(0).max(1001),
   createdAt: z.iso.datetime(), updatedAt: z.iso.datetime(), events: z.array(eventSchema).max(1001) });
+export const admissionSchema = z.object({ run_id: id });
+export const cancellationSchema = z.object({ run_id: id, state });
+export const eventsSchema = z.object({ run_id: id, sequence: z.number().int().min(0).max(1001), events: z.array(eventSchema).max(1001) });
+export function isLive(run: Run) { return ['queued', 'running', 'awaiting_approval', 'verifying'].includes(run.state); }
+export function mergeEvents(run: Run, batch: z.infer<typeof eventsSchema>): Run {
+  if (batch.run_id !== run.runId || batch.sequence !== run.sequence + batch.events.length ||
+      batch.events.some((event, index) => event.sequence !== run.sequence + index + 1)) throw new ClientError('invalid_event_sequence');
+  return { ...run, sequence: batch.sequence, state: batch.events.at(-1)?.state ?? run.state, events: [...run.events, ...batch.events] };
+}
 export type Scenario = z.infer<typeof scenariosSchema>['scenarios'][number];
 export type Run = z.infer<typeof runSchema>;
 export class ClientError extends Error {
@@ -25,10 +34,10 @@ export class ApiClient {
   }
   get active() { return !this.#abort.signal.aborted; }
   close() { this.#token = ''; this.#abort.abort(); }
-  async request<T>(path: string, schema: z.ZodType<T>, body?: unknown, key?: string): Promise<T> {
+  async request<T>(path: string, schema: z.ZodType<T>, body?: unknown, key?: string, signal?: AbortSignal): Promise<T> {
     if (!/^\/v1\/[a-zA-Z0-9_/?=&-]+$/.test(path) || !this.active) throw new ClientError('request_unavailable');
     const response = await fetch(path, { method: body === undefined ? 'GET' : 'POST', credentials: 'omit', redirect: 'error', cache: 'no-store',
-      referrerPolicy: 'no-referrer', signal: AbortSignal.any([this.#abort.signal, AbortSignal.timeout(10_000)]),
+      referrerPolicy: 'no-referrer', signal: AbortSignal.any([this.#abort.signal, AbortSignal.timeout(10_000), ...(signal ? [signal] : [])]),
       headers: { authorization: `Bearer ${this.#token}`, ...(body === undefined ? {} : { 'content-type': 'application/json', 'idempotency-key': key ?? crypto.randomUUID() }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     if (!response.ok) {

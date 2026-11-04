@@ -2,7 +2,7 @@
 
 A browser automation runtime for bounded tasks and independently verified results.
 
-Includes validated action/task schemas, run lifecycle rules, fixture read policies, action/request budgets, isolated read-only browser sessions, a seeded storefront, and a deterministic product task runner with independent verification. Includes a local authenticated API and a separate browser worker. Durable synthetic approval records and authenticated decisions are available; the dashboard, form execution and model integration are not implemented yet.
+Includes validated action/task schemas, run lifecycle rules, fixture read policies, action/request budgets, isolated read-only browser sessions, a seeded storefront, and a deterministic product task runner with independent verification. Includes a local authenticated API and a separate browser worker. Durable synthetic approval records and authenticated decisions are available; form execution and model integration are not implemented yet.
 
 ## Setup
 
@@ -74,7 +74,9 @@ The API worker currently supports Linux with Node 24 and a local filesystem. Ins
 pnpm dev:api
 ```
 
-Binds to `127.0.0.1:4180`. Every request needs `Authorization: Bearer <AGENT_API_TOKEN>`. The exact configured Host and any Origin must match the API address; cross-site browser requests are denied and CORS is disabled. This is a local single-user API, not an Internet-facing service or protection against other programs that can read your files.
+Binds to `127.0.0.1:4180`. API requests under `/v1` need `Authorization: Bearer <AGENT_API_TOKEN>`. The exact configured Host and any Origin must match the API address; cross-site browser requests are denied and CORS is disabled. This is a local single-user API, not an Internet-facing service or protection against other programs that can read your files.
+
+Open [the local dashboard](http://127.0.0.1:4180) and enter the configured API key. The key is kept in memory for the connected page, with no cookies or browser storage. The gallery starts synthetic read tasks and shows recorded events with incremental polling. Cancel stops a queued or active run; opening a history entry does not start work. If a submission response is lost, retry the same task in the connected page to reuse its key.
 
 | Method | Path | Behavior |
 | --- | --- | --- |
@@ -91,7 +93,7 @@ POST requests require `Idempotency-Key`, 8–128 letters, digits, underscores or
 
 The coordinator holds a separate SQLite file lock, dispatches one fresh worker at a time, and interrupts old API runs on startup without resuming them. The CLI owner is separate. The 30-second deadline includes queue and browser startup time. Cancellation requests graceful worker shutdown, then escalates after two seconds. The worker receives a minimal environment without the API token. Keep the database and coordinator lock files on local storage; do not delete or replace them while running.
 
-Browser process-group cleanup on Linux is best effort; a crash during launch can occur before its PID is reported. Use container/process-group supervision and host-network restrictions for stronger isolation. The application does not supply that deployment boundary yet. Whole-history retention cleanup, executable approval workflows and dashboard are still absent. API history contains verification reason and event metadata rather than full product observations.
+Browser process-group cleanup on Linux is best effort; a crash during launch can occur before its PID is reported. Use container/process-group supervision and host-network restrictions for stronger isolation. The application does not supply that deployment boundary yet. Whole-history retention cleanup, and executable approval workflows are still absent. API history contains verification reason and event metadata rather than full product observations.
 
 Completed verification stores bounded observed product IDs/prices and the independent verifier verdict as JSON evidence, atomically with verification and terminal events. Reference answers are excluded. Evidence expires after seven days.
 
