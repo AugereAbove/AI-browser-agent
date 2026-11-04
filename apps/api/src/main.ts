@@ -14,7 +14,7 @@ await mkdir(dirname(database), { recursive: true, mode: 0o700 });
 const coordinator = new Coordinator(database);
 let app;
 try {
-  app = createApi({ token, origin, store: coordinator.store, owner: 'api-local', submissions: true });
+  app = createApi({ token, origin, store: coordinator.store, owner: 'api-local', submissions: true, dashboard: true });
 } catch (error) {
   await coordinator.close();
   throw error;

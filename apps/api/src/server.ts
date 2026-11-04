@@ -1,3 +1,4 @@
+import { dashboardAssets, dashboardCsp } from './dashboard.ts';
 import { approvalDecisionSchema } from '../../../packages/policy/src/approval-gate.ts';
 import { readScenarios } from '../../../packages/agent/src/read-scenarios.ts';
 import type { Readable } from 'node:stream';
@@ -25,6 +26,7 @@ export interface ApiConfig {
   readonly owner: string;
   readonly store: RunStore;
   readonly submissions?: boolean;
+  readonly dashboard?: boolean;
 }
 
 export function createApi(config: ApiConfig) {
@@ -33,6 +35,7 @@ export function createApi(config: ApiConfig) {
   if (origin.protocol !== 'http:' || origin.hostname !== '127.0.0.1' || origin.origin !== config.origin) {
     throw new Error('API requires a canonical literal loopback HTTP origin');
   }
+  const assets = config.dashboard ? dashboardAssets() : new Map<string, { body: Buffer; type: string }>();
   const expectedAuthorization = Buffer.from(`Bearer ${config.token}`);
   const app = Fastify({ logger: false, bodyLimit: 4096, requestTimeout: 10_000,
     connectionTimeout: 10_000, keepAliveTimeout: 5000, requestIdHeader: false, genReqId: () => randomUUID(),
@@ -46,6 +49,7 @@ export function createApi(config: ApiConfig) {
     if (request.headers['sec-fetch-site'] !== undefined && !['same-origin', 'none'].includes(String(request.headers['sec-fetch-site']))) {
       throw new ApiError(403, 'cross_site_denied');
     }
+    if (request.method === 'GET' && assets.has(request.url)) return;
     const authorization = Buffer.from(request.headers.authorization ?? '');
     if (authorization.length !== expectedAuthorization.length || !timingSafeEqual(authorization, expectedAuthorization)) {
       throw new ApiError(401, 'unauthorized');
@@ -59,6 +63,9 @@ export function createApi(config: ApiConfig) {
     reply.code(status).send({ error: { code, request_id: request.id } });
   });
   app.setNotFoundHandler((request, reply) => reply.code(404).send({ error: { code: 'not_found', request_id: request.id } }));
+  for (const [path, asset] of assets) app.get(path, async (_request, reply) => reply.type(asset.type)
+    .header('Content-Security-Policy', dashboardCsp).header('Referrer-Policy', 'no-referrer')
+    .header('Cross-Origin-Resource-Policy', 'same-origin').send(asset.body));
   app.post('/v1/runs', async (request, reply) => {
     if (!config.submissions) throw new ApiError(503, 'submissions_unavailable');
     const key = idempotencyKeySchema.parse(request.headers['idempotency-key']);

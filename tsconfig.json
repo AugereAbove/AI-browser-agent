@@ -19,13 +19,15 @@
     "verbatimModuleSyntax": true,
     "allowImportingTsExtensions": true,
     "skipLibCheck": true,
-    "noEmit": true
+    "noEmit": true,
+    "jsx": "react-jsx"
   },
   "include": [
     "apps/**/*.ts",
     "packages/**/*.ts",
     "tests/**/*.ts",
     "vitest.config.ts",
-    "vitest.browser.config.ts"
+    "vitest.browser.config.ts",
+    "apps/**/*.tsx"
   ]
 }
