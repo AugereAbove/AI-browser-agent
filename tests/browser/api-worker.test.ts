@@ -104,3 +104,15 @@ test('a stopped worker cannot block the API and cancellation escalates to termin
   expect(() => process.kill(pid, 0)).toThrow();
   expect(coordinator.store.status('api-local', admitted.runId)?.state).toBe('cancelled');
 });
+
+test('lookup admission persists evidence under the lookup template', async () => {
+  const { app, coordinator } = await setup();
+  const response = await app.inject({ method: 'POST', url: '/v1/runs', headers,
+    payload: { template_id: 'store-lookup-v1', input: { productId: 'audio-01' }, seed: 17 } });
+  expect(response.statusCode).toBe(202);
+  const id = response.json().run_id;
+  await waitFor(() => coordinator.store.status('api-local', id)?.state === 'succeeded');
+  expect(coordinator.store.evidence('api-local', id)).toMatchObject({
+    template_id: 'store-lookup-v1', records: [{ id: 'audio-01' }], verification: { verified: true },
+  });
+});

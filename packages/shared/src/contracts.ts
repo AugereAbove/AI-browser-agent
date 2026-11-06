@@ -39,6 +39,8 @@ export const actionProposalSchema = z.discriminatedUnion('type', [
   z.strictObject({ id: actionId, type: z.literal('waitFor'), target: locatorSchema, timeoutMs: z.number().int().min(1).max(10_000) }),
 ]);
 
+export const productLookupSchema = z.strictObject({ productId: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/) });
+
 export const productQuerySchema = z.strictObject({
   category: z.enum(['laptops', 'audio', 'accessories']).optional(),
   maxPriceCents: z.number().int().min(0).max(100_000_000).optional(),

@@ -5,7 +5,8 @@ import type { Browser } from 'playwright';
 import { openReadSession, SessionError } from '../../browser/src/read-session.ts';
 import type { ReadSession } from '../../browser/src/read-session.ts';
 import { ReadPolicy, PolicyError } from '../../policy/src/read-policy.ts';
-import { productQuerySchema } from '../../shared/src/contracts.ts';
+import { runRequestSchema } from '../../shared/src/run-request.ts';
+import type { RunRequest } from '../../shared/src/run-request.ts';
 import type { ProductRecord } from '../../shared/src/contracts.ts';
 import { verifyProducts } from '../../verifier/src/products.ts';
 import type { CatalogRecord, ProductVerdict } from '../../verifier/src/products.ts';
@@ -17,8 +18,11 @@ export const productTaskTemplate = Object.freeze({
   id: 'store-filter-v1', version: 1, maxActions: 2, maxRequests: 1, timeoutMs: 30_000,
 });
 
+export const productLookupTemplate = Object.freeze({ ...productTaskTemplate, id: 'store-lookup-v1' as const });
+
 export interface ProductTaskConfig {
   readonly runId?: string;
+  readonly templateId?: RunRequest['template_id'];
   readonly origin: string;
   readonly referenceCatalog: readonly CatalogRecord[];
   readonly timeoutMs?: number;
@@ -56,8 +60,9 @@ export async function runProductTask(
   signal?: AbortSignal,
 ): Promise<ProductTaskResult> {
   const runId = config.runId === undefined ? randomUUID() : z.uuid().parse(config.runId);
+  const template = config.templateId === 'store-lookup-v1' ? productLookupTemplate : productTaskTemplate;
   const journal = config.journal;
-  journal?.start(runId, productTaskTemplate.id);
+  journal?.start(runId, template.id);
   const status: { state: RunState } = { state: 'queued' };
   let session: ReadSession | undefined;
   let records: readonly Readonly<ProductRecord>[] = Object.freeze([]);
@@ -82,7 +87,7 @@ export async function runProductTask(
   } else {
     move({ type: 'started' });
     try {
-      const query = productQuerySchema.parse(rawInput);
+      const query = runRequestSchema.parse({ template_id: config.templateId ?? 'store-filter-v1', input: rawInput }).input;
       phase = 'configuration';
       const referenceCatalog = Object.freeze(config.referenceCatalog.map((item) => Object.freeze({
         id: item.id, category: item.category, priceCents: item.priceCents, inStock: item.inStock,
@@ -115,7 +120,7 @@ export async function runProductTask(
       move({ type: 'verification_started' });
       verdict = verifyProducts(referenceCatalog, query, records);
       journal?.completeVerification?.(runId, {
-        format_version: 1, run_id: runId, template_id: 'store-filter-v1',
+        format_version: 1, run_id: runId, template_id: template.id as RunRequest['template_id'],
         records: records.map((record) => ({ ...record })),
         verification: { verified: verdict.verified, reason: verdict.reason },
       });
@@ -137,7 +142,7 @@ export async function runProductTask(
   }
 
   return Object.freeze({
-    runId, templateId: productTaskTemplate.id, state: status.state, verified: status.state === 'succeeded' && verdict?.verified === true,
+    runId, templateId: template.id, state: status.state, verified: status.state === 'succeeded' && verdict?.verified === true,
     records, verificationReason: verdict?.reason ?? null, errorCode, events: Object.freeze(events),
   });
 }

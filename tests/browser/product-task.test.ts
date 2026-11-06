@@ -126,3 +126,10 @@ it('journal failures abort browser work and cannot produce success', async () =>
   } }, {})).rejects.toThrow('Disk unavailable');
   expect(browser.contexts()).toHaveLength(0);
 });
+
+it.each(['audio-01', 'missing'])('verifies an exact lookup for %s through the bounded browser', async productId => {
+  const origin = await listen(createFixtureServer(17));
+  const result = await runProductTask(browser, { origin, referenceCatalog: createCatalog(17), templateId: 'store-lookup-v1' }, { productId });
+  expect(result).toMatchObject({ state: 'succeeded', verified: true, templateId: 'store-lookup-v1' });
+  expect(result.records.map(record => record.id)).toEqual(productId === 'missing' ? [] : [productId]);
+});

@@ -1,4 +1,4 @@
-import { productQuerySchema, productRecordsSchema } from '../../shared/src/contracts.ts';
+import { productLookupSchema, productQuerySchema, productRecordsSchema } from '../../shared/src/contracts.ts';
 
 export interface CatalogRecord {
   readonly id: string;
@@ -15,9 +15,11 @@ export interface ProductVerdict {
 }
 
 export function verifyProducts(catalog: readonly CatalogRecord[], rawQuery: unknown, rawResult: unknown): ProductVerdict {
-  const query = productQuerySchema.parse(rawQuery);
+  const lookup = typeof rawQuery === 'object' && rawQuery !== null && 'productId' in rawQuery ? productLookupSchema.parse(rawQuery) : null;
+  const query = productQuerySchema.parse(lookup ? {} : rawQuery);
   const candidates: CatalogRecord[] = [];
   for (const item of catalog) {
+    if (lookup && item.id !== lookup.productId) continue;
     if (query.category !== undefined && item.category !== query.category) continue;
     if (query.maxPriceCents !== undefined && item.priceCents > query.maxPriceCents) continue;
     if (query.inStockOnly && !item.inStock) continue;

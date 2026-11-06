@@ -39,7 +39,7 @@ if (!request || saved?.state !== 'queued') {
     const remaining = 30_000 - (Date.now() - Date.parse(saved.createdAt));
     if (remaining < 1) store.end(owner, runId, 'timed_out');
     else await runProductTask(browser, {
-      runId, origin: `http://127.0.0.1:${address.port}`, referenceCatalog: createCatalog(request.seed), timeoutMs: remaining,
+      runId, templateId: request.template_id, origin: `http://127.0.0.1:${address.port}`, referenceCatalog: createCatalog(request.seed), timeoutMs: remaining,
       journal: {
         completeVerification(id, evidence) { store.completeVerification(owner, id, evidence); },
         start() {

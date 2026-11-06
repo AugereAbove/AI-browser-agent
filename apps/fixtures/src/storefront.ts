@@ -1,8 +1,12 @@
-import { productQuerySchema } from '../../../packages/shared/src/contracts.ts';
+import { productLookupSchema, productQuerySchema } from '../../../packages/shared/src/contracts.ts';
 import type { ProductQuery } from '../../../packages/shared/src/contracts.ts';
 import type { Product } from './catalog.ts';
 
-export function parseQuery(search: URLSearchParams): ProductQuery {
+export function parseQuery(search: URLSearchParams): ProductQuery | { productId: string } {
+  if (search.has('productId')) {
+    if ([...search].length !== 1) throw new Error('Lookup accepts one product ID');
+    return productLookupSchema.parse({ productId: search.get('productId') });
+  }
   const allowed = new Set(['category', 'maxPriceCents', 'inStockOnly', 'limit']);
   const values: Record<string, unknown> = {};
   for (const [key, value] of search) {
@@ -25,7 +29,8 @@ export function parseQuery(search: URLSearchParams): ProductQuery {
   return productQuerySchema.parse(values);
 }
 
-export function selectProducts(catalog: readonly Product[], query: ProductQuery): readonly Product[] {
+export function selectProducts(catalog: readonly Product[], query: ProductQuery | { productId: string }): readonly Product[] {
+  if ('productId' in query) return catalog.filter(product => product.id === query.productId);
   return catalog
     .filter((product) => !query.category || product.category === query.category)
     .filter((product) => query.maxPriceCents === undefined || product.priceCents <= query.maxPriceCents)
@@ -38,8 +43,9 @@ function escape(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
 }
 
-export function renderStorefront(catalog: readonly Product[], query: ProductQuery): string {
-  const products = selectProducts(catalog, query);
+export function renderStorefront(catalog: readonly Product[], rawQuery: ProductQuery | { productId: string }): string {
+  const query = 'productId' in rawQuery ? productQuerySchema.parse({}) : rawQuery;
+  const products = selectProducts(catalog, rawQuery);
   const options = ['', 'laptops', 'audio', 'accessories'].map((category) =>
     `<option value="${category}"${query.category === category || (!query.category && !category) ? ' selected' : ''}>${category || 'All categories'}</option>`).join('');
   return `<!doctype html>
