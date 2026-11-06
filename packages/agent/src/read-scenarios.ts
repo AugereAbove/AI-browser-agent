@@ -1,16 +1,17 @@
 import { z } from 'zod';
-import { productQuerySchema } from '../../shared/src/contracts.ts';
+import { runRequestSchema } from '../../shared/src/run-request.ts';
+import { productLookupSchema, productQuerySchema } from '../../shared/src/contracts.ts';
 import { productTaskTemplate } from './product-task.ts';
 
 export const readScenarioSchema = z.strictObject({
   id: z.string().regex(/^[a-z0-9-]{1,80}$/), version: z.literal(1), title: z.string().min(1).max(160),
   group: z.enum(['discovery', 'comparison']),
-  template_id: z.literal('store-filter-v1'), seed: z.number().int().min(0).max(0xffff_ffff),
-  input: productQuerySchema, permission_scope: z.literal('read-only-fixture'),
+  template_id: z.enum(['store-filter-v1', 'store-lookup-v1']), seed: z.number().int().min(0).max(0xffff_ffff),
+  input: z.union([productQuerySchema, productLookupSchema]), permission_scope: z.literal('read-only-fixture'),
   verifier: z.literal('products-v1'), expected_outcome: z.enum(['records', 'empty']),
   evidence: z.literal('product-evidence-v1'),
   budgets: z.strictObject({ maxActions: z.literal(2), maxRequests: z.literal(1), timeoutMs: z.literal(30_000) }),
-});
+}).refine(value => runRequestSchema.safeParse({ template_id: value.template_id, input: value.input, seed: value.seed }).success, 'Template input mismatch');
 function scenario(value: unknown) {
   const parsed = readScenarioSchema.parse(value);
   Object.freeze(parsed.input);
@@ -28,4 +29,8 @@ export const readScenarios = Object.freeze([
   scenario({ ...common, id: 'combined-constraints', title: 'Find available laptops priced up to 2500 PLN', group: 'discovery', seed: 17, input: { category: 'laptops', maxPriceCents: 250_000, inStockOnly: true, limit: 3 }, expected_outcome: 'records' }),
   scenario({ ...common, id: 'valid-empty-result', title: 'Confirm no free products exist', group: 'discovery', seed: 0, input: { maxPriceCents: 0, limit: 20 }, expected_outcome: 'empty' }),
   scenario({ ...common, id: 'stock-aware-comparison', title: 'Find the cheapest available audio product', group: 'comparison', seed: 42, input: { category: 'audio', inStockOnly: true, limit: 1 }, expected_outcome: 'records' }),
+  scenario({ ...common, id: 'exact-match', title: 'Find one exact product ID', group: 'discovery', seed: 17, template_id: 'store-lookup-v1', input: { productId: 'audio-01' }, expected_outcome: 'records' }),
+  scenario({ ...common, id: 'unknown-product', title: 'Confirm an unknown product ID is absent', group: 'discovery', seed: 42, template_id: 'store-lookup-v1', input: { productId: 'unknown-product' }, expected_outcome: 'empty' }),
+  scenario({ ...common, id: 'cheapest-match', title: 'Find the cheapest accessory', group: 'comparison', seed: 0, input: { category: 'accessories', limit: 1 }, expected_outcome: 'records' }),
+  scenario({ ...common, id: 'ranked-shortlist', title: 'Rank three laptops by price', group: 'comparison', seed: 123, input: { category: 'laptops', limit: 3 }, expected_outcome: 'records' }),
 ]);

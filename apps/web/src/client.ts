@@ -1,10 +1,10 @@
 import { z } from 'zod';
 import { productEvidenceSchema } from '../../../packages/shared/src/product-evidence.ts';
-import { actionProposalSchema, productQuerySchema } from '../../../packages/shared/src/contracts.ts';
+import { actionProposalSchema, productLookupSchema, productQuerySchema } from '../../../packages/shared/src/contracts.ts';
 const id = z.uuid();
 const state = z.enum(['queued', 'running', 'awaiting_approval', 'verifying', 'succeeded', 'failed', 'denied', 'cancelled', 'timed_out', 'interrupted']);
 export const scenariosSchema = z.object({ scenarios: z.array(z.object({ id: z.string().max(80), title: z.string().max(160),
-  template_id: z.literal('store-filter-v1'), seed: z.number().int(), input: productQuerySchema, permission_scope: z.literal('read-only-fixture') })).max(25) });
+  template_id: z.enum(['store-filter-v1', 'store-lookup-v1']), seed: z.number().int(), input: z.union([productQuerySchema, productLookupSchema]), permission_scope: z.literal('read-only-fixture') })).max(25) });
 export const runsSchema = z.object({ runs: z.array(z.object({ run_id: id, template_id: z.string().max(80), state,
   sequence: z.number().int().min(0).max(1001), created_at: z.iso.datetime() })).max(50) });
 export const eventSchema = z.object({ sequence: z.number().int().min(1).max(1001), state,

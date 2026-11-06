@@ -7,7 +7,7 @@ test('evaluation executes each declared scenario and separates valid empty resul
   const { stdout } = await execute(process.execPath, ['apps/cli/src/evaluate.ts', '--trials', '1'], { timeout: 20_000 });
   const report = JSON.parse(stdout);
   expect(report.mode).toBe('deterministic-fixture');
-  expect(report.outcomes).toEqual({ passed: 5, total: 5, records: { passed: 4, total: 4 }, empty: { passed: 1, total: 1 } });
+  expect(report.outcomes).toEqual({ passed: 9, total: 9, records: { passed: 7, total: 7 }, empty: { passed: 2, total: 2 } });
   expect(report.environment.chromium).toBeTruthy();
   expect(report.environment.provider).toBeNull();
   expect(report.cleanup_error).toBeNull();
