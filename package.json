@@ -18,7 +18,8 @@
     "history": "node apps/cli/src/history.ts",
     "dev:api": "pnpm build:web && node --env-file-if-exists=.env apps/api/src/main.ts",
     "evaluate:read": "node apps/cli/src/evaluate.ts",
-    "build:web": "node apps/web/build.ts"
+    "build:web": "node apps/web/build.ts",
+    "evaluate:verifier": "node apps/cli/src/audit-verifier.ts"
   },
   "dependencies": {
     "fastify": "5.12.7",
