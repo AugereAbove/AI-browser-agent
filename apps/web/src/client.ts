@@ -57,6 +57,7 @@ export class ApiClient {
       headers: { authorization: `Bearer ${this.#token}`, ...(body === undefined ? {} : { 'content-type': 'application/json', 'idempotency-key': key ?? crypto.randomUUID() }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
       if (response.status === 401) { this.close(); throw new ClientError('unauthorized'); }
       throw new ClientError(response.status === 409 ? 'conflict_refresh_required' : response.status === 404 ? 'not_found' : 'request_failed');
     }

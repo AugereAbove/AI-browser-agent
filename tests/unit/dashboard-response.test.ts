@@ -1,4 +1,6 @@
-import { expect, test, vi } from 'vitest';
+import { afterEach, expect, test, vi } from 'vitest';
+import { ApiClient } from '../../apps/web/src/client.ts';
+import { z } from 'zod';
 import { readBounded } from '../../apps/web/src/response.ts';
 
 test('response reader assembles split bytes without trusting declared length', async () => {
@@ -30,4 +32,21 @@ test('failed streams release the reader and empty bodies remain readable', async
   await expect(readBounded(response, 10)).rejects.toThrow('transport failed');
   expect(response.body?.locked).toBe(false);
   expect(await readBounded(new Response(''), 10)).toHaveLength(0);
+});
+
+afterEach(() => vi.unstubAllGlobals());
+
+test('failed authenticated reads cancel their bodies and unauthorized responses close the session', async () => {
+  const cancel = vi.fn();
+  const fetch = vi.fn().mockImplementationOnce(() => Promise.resolve(new Response(new ReadableStream({ cancel }), { status: 503 })))
+    .mockImplementationOnce(() => Promise.resolve(new Response('{}', { status: 401 })));
+  vi.stubGlobal('fetch', fetch);
+  const client = new ApiClient('a'.repeat(48));
+  await expect(client.request('/v1/runs', z.unknown())).rejects.toThrow('request_failed');
+  expect(cancel).toHaveBeenCalledOnce();
+  expect(client.active).toBe(true);
+  await expect(client.request('/v1/runs', z.unknown())).rejects.toThrow('unauthorized');
+  expect(client.active).toBe(false);
+  await expect(client.request('/v1/runs', z.unknown())).rejects.toThrow('request_unavailable');
+  expect(fetch).toHaveBeenCalledTimes(2);
 });

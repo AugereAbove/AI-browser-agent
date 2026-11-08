@@ -103,3 +103,44 @@ test('dashboard checks evidence bytes before displaying or downloading them', as
     expect(store.list('local')).toHaveLength(1);
   } finally { await browser.close(); await app.close(); store.close(); }
 });
+
+test('live monitoring reconnects from its cursor and resumes after bounded failures without replay', async () => {
+  const token = 'a'.repeat(48);
+  const store = new RunStore(':memory:');
+  const { app, origin } = await serve(store, token);
+  const browser = await launchBrowser().catch(async error => { await app.close(); store.close(); throw error; });
+  try {
+    const { runId } = store.admit('local', 'reconnecting-run', { template_id: 'store-filter-v1', input: {} });
+    const page = await browser.newPage();
+    page.setDefaultTimeout(10_000);
+    await page.goto(origin);
+    await page.getByLabel('API key').fill(token);
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    let remaining = 1;
+    const cursors: string[] = [];
+    await page.route('**/events?after=*', async route => {
+      cursors.push(new URL(route.request().url()).searchParams.get('after')!);
+      if (remaining-- > 0) await route.fulfill({ status: 503, body: '{}' });
+      else await route.continue();
+    });
+    await page.locator('.history-row').filter({ hasText: runId }).click();
+    await page.getByText('Reconnecting to this run', { exact: true }).waitFor();
+    store.append(runId, { sequence: 2, type: 'state_changed', state: 'running' });
+    const detail = page.getByRole('region', { name: 'Run detail' });
+    await detail.locator('.badge').filter({ hasText: 'running' }).waitFor();
+    expect(cursors.slice(0, 2)).toEqual(['1', '1']);
+    remaining = 3;
+    await page.getByText('Live updates paused', { exact: true }).waitFor();
+    expect(cursors.slice(-3)).toEqual(['2', '2', '2']);
+    const count = cursors.length;
+    await page.waitForTimeout(1000);
+    expect(cursors).toHaveLength(count);
+    store.end('local', runId, 'interrupted');
+    remaining = 0;
+    await page.getByRole('button', { name: 'Resume updates' }).click();
+    await detail.locator('.badge').filter({ hasText: 'interrupted' }).waitFor();
+    expect(await detail.locator('.events li').count()).toBe(3);
+    expect(store.list('local')).toHaveLength(1);
+    expect(store.status('local', runId)?.sequence).toBe(3);
+  } finally { await browser.close(); await app.close(); store.close(); }
+});
