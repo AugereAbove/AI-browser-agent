@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { readBounded } from './response.ts';
 import { productEvidenceSchema } from '../../../packages/shared/src/product-evidence.ts';
 import { actionProposalSchema, productLookupSchema, productQuerySchema } from '../../../packages/shared/src/contracts.ts';
 const id = z.uuid();
@@ -63,14 +64,14 @@ export class ApiClient {
   }
   async request<T>(path: string, schema: z.ZodType<T>, body?: unknown, key?: string, signal?: AbortSignal): Promise<T> {
     const response = await this.#send(path, body, key, signal);
-    const text = await response.text();
-    if (text.length > 2_000_000 || !this.active) throw new ClientError('invalid_response');
-    return schema.parse(JSON.parse(text));
+    const bytes = await readBounded(response, 2_000_000);
+    if (!this.active || signal?.aborted) throw new ClientError('request_unavailable');
+    return schema.parse(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)));
   }
   async evidence(runId: string, artifact: Artifact, signal?: AbortSignal) {
     id.parse(runId); id.parse(artifact.artifact_id);
     const response = await this.#send(`/v1/runs/${runId}/artifacts/${artifact.artifact_id}`, undefined, undefined, signal);
-    const bytes = await response.arrayBuffer();
+    const bytes = (await readBounded(response, 16_384)).buffer;
     if (bytes.byteLength !== artifact.size_bytes || bytes.byteLength > 16_384 ||
         response.headers.get('X-Content-SHA256') !== artifact.checksum_sha256) throw new ClientError('evidence_integrity_error');
     const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), value => value.toString(16).padStart(2, '0')).join('');
