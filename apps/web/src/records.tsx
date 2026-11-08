@@ -9,6 +9,7 @@ export function RunRecords({ api, run, onUnauthorized }: { api: ApiClient; run: 
   const [evidence, setEvidence] = useState<Awaited<ReturnType<ApiClient['evidence']>> | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [revision, setRevision] = useState(0);
   const operation = useRef<AbortController | null>(null);
   const unauthorized = useRef(onUnauthorized);
   unauthorized.current = onUnauthorized;
@@ -28,7 +29,7 @@ export function RunRecords({ api, run, onUnauthorized }: { api: ApiClient; run: 
       setArtifacts(a.artifacts); setApprovals(b.approvals);
     }).catch(value => { if (!abort.signal.aborted) failed(value); });
     return () => { abort.abort(); operation.current?.abort(); operation.current = null; };
-  }, [api, run.runId, run.state]);
+  }, [api, run.runId, run.state, revision]);
   async function inspect(load: (signal: AbortSignal) => Promise<void>) {
     if (operation.current) return;
     const abort = new AbortController();
@@ -38,12 +39,14 @@ export function RunRecords({ api, run, onUnauthorized }: { api: ApiClient; run: 
     finally { if (operation.current === abort) { operation.current = null; setBusy(false); } }
   }
   function openEvidence(artifact: Artifact) {
+    setEvidence(null);
     return inspect(async signal => {
       const result = await api.evidence(run.runId, artifact, signal);
       if (!signal.aborted) setEvidence(result);
     });
   }
   function openApproval(action: string) {
+    setTicket(null);
     return inspect(async signal => {
       const record = await api.request(`/v1/runs/${run.runId}/approvals/${action}`, approvalSchema, undefined, undefined, signal);
       if (record.run_id !== run.runId || record.binding.run_id !== run.runId ||
@@ -59,6 +62,7 @@ export function RunRecords({ api, run, onUnauthorized }: { api: ApiClient; run: 
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   return <div className="records">
+    <button disabled={busy} onClick={() => setRevision(value => value + 1)}>Refresh run records</button>
     <div><h3>Verification evidence</h3>
       {artifacts?.length === 0 && <p>No unexpired evidence for this run.</p>}
       {artifacts?.map(artifact => <button key={artifact.artifact_id} disabled={busy} onClick={() => void openEvidence(artifact)}>Inspect evidence</button>)}

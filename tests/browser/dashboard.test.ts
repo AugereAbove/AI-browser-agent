@@ -71,7 +71,15 @@ test('dashboard checks evidence bytes before displaying or downloading them', as
     await page.goto(origin);
     await page.getByLabel('API key').fill(token);
     await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    let rejectMetadata = true;
+    await page.route('**/artifacts', async route => {
+      if (rejectMetadata) await route.fulfill({ status: 503, body: '{}' });
+      else await route.continue();
+    });
     await page.locator('.history-row').filter({ hasText: runId }).click();
+    await page.getByRole('alert').filter({ hasText: 'request failed' }).waitFor();
+    rejectMetadata = false;
+    await page.getByRole('button', { name: 'Refresh run records' }).click();
     const path = '**/artifacts/*';
     await page.route(path, async route => {
       const response = await route.fetch();
@@ -87,6 +95,11 @@ test('dashboard checks evidence bytes before displaying or downloading them', as
     const download = page.waitForEvent('download');
     await page.getByRole('button', { name: 'Download verified JSON' }).click();
     expect((await download).suggestedFilename()).toBe(`product-evidence-${runId}.json`);
+    await page.route(path, route => route.fulfill({ status: 404, body: '{}' }));
+    await inspect.click();
+    await page.getByRole('alert').filter({ hasText: 'not found' }).waitFor();
+    expect(await page.getByRole('button', { name: 'Download verified JSON' }).count()).toBe(0);
+    expect(await page.getByText('laptop-01 · 1250.00 PLN').count()).toBe(0);
     expect(store.list('local')).toHaveLength(1);
   } finally { await browser.close(); await app.close(); store.close(); }
 });
