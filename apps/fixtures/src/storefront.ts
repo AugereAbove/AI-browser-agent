@@ -1,8 +1,20 @@
 import { productLookupSchema, productQuerySchema } from '../../../packages/shared/src/contracts.ts';
 import type { ProductQuery } from '../../../packages/shared/src/contracts.ts';
+import { fixturePageSchema } from '../../../packages/shared/src/product-pages.ts';
+import type { FixturePage } from '../../../packages/shared/src/product-pages.ts';
 import type { Product } from './catalog.ts';
 
-export function parseQuery(search: URLSearchParams): ProductQuery | { productId: string } {
+export function parseQuery(search: URLSearchParams): ProductQuery | FixturePage | { productId: string } {
+  if (search.has('pageSize') || search.has('page')) {
+    const values = new URLSearchParams(search);
+    const pageSize = values.getAll('pageSize');
+    const page = values.getAll('page');
+    if (pageSize.length !== 1 || page.length !== 1 || !/^\d+$/.test(pageSize[0]!) || !/^\d+$/.test(page[0]!)) throw new Error('Invalid pagination');
+    values.delete('pageSize'); values.delete('page');
+    const query = parseQuery(values);
+    if ('productId' in query) throw new Error('Lookup cannot be paginated');
+    return fixturePageSchema.parse({ ...query, pageSize: Number(pageSize[0]), page: Number(page[0]) });
+  }
   if (search.has('productId')) {
     if ([...search].length !== 1) throw new Error('Lookup accepts one product ID');
     return productLookupSchema.parse({ productId: search.get('productId') });
@@ -29,23 +41,33 @@ export function parseQuery(search: URLSearchParams): ProductQuery | { productId:
   return productQuerySchema.parse(values);
 }
 
-export function selectProducts(catalog: readonly Product[], query: ProductQuery | { productId: string }): readonly Product[] {
+export function selectProducts(catalog: readonly Product[], query: ProductQuery | FixturePage | { productId: string }): readonly Product[] {
   if ('productId' in query) return catalog.filter(product => product.id === query.productId);
-  return catalog
+  const matches = catalog
     .filter((product) => !query.category || product.category === query.category)
     .filter((product) => query.maxPriceCents === undefined || product.priceCents <= query.maxPriceCents)
     .filter((product) => !query.inStockOnly || product.inStock)
     .toSorted((left, right) => left.priceCents - right.priceCents || left.id.localeCompare(right.id))
     .slice(0, query.limit);
+  return 'pageSize' in query ? matches.slice((query.page - 1) * query.pageSize, query.page * query.pageSize) : matches;
 }
 
 function escape(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
 }
 
-export function renderStorefront(catalog: readonly Product[], rawQuery: ProductQuery | { productId: string }): string {
+export function renderStorefront(catalog: readonly Product[], rawQuery: ProductQuery | FixturePage | { productId: string }): string {
   const query = 'productId' in rawQuery ? productQuerySchema.parse({}) : rawQuery;
   const products = selectProducts(catalog, rawQuery);
+  let navigation = '';
+  if ('pageSize' in rawQuery) {
+    const link = (page: number, label: string) => {
+      const params = new URLSearchParams();
+      for (const [key, value] of Object.entries({ ...rawQuery, page })) if (value !== undefined) params.set(key, String(value));
+      return `<a href="/?${escape(params.toString())}">${label}</a>`;
+    };
+    navigation = `<nav aria-label="Product pages">${rawQuery.page > 1 ? link(rawQuery.page - 1, 'Previous page') : ''} ${rawQuery.page < 20 && products.length === rawQuery.pageSize && rawQuery.page * rawQuery.pageSize < rawQuery.limit ? link(rawQuery.page + 1, 'Next page') : ''}</nav>`;
+  }
   const options = ['', 'laptops', 'audio', 'accessories'].map((category) =>
     `<option value="${category}"${query.category === category || (!query.category && !category) ? ' selected' : ''}>${category || 'All categories'}</option>`).join('');
   return `<!doctype html>
@@ -60,5 +82,5 @@ export function renderStorefront(catalog: readonly Product[], rawQuery: ProductQ
 <button type="submit">Apply filters</button></form>
 <section aria-label="Matching products"><h2>Results</h2><p role="status">${products.length} matching products</p>
 ${products.length === 0 ? '<p>No matching products.</p>' : products.map((product) => `<article aria-label="${escape(product.name)}" data-product-id="${product.id}"><h2>${escape(product.name)}</h2><p>${product.category}</p><p data-price-cents="${product.priceCents}">${(product.priceCents / 100).toFixed(2)} PLN</p><p>${product.inStock ? 'In stock' : 'Out of stock'}</p></article>`).join('')}
-</section></main></body></html>`;
+</section>${navigation}</main></body></html>`;
 }
