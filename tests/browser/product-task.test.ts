@@ -133,3 +133,46 @@ it.each(['audio-01', 'missing'])('verifies an exact lookup for %s through the bo
   expect(result).toMatchObject({ state: 'succeeded', verified: true, templateId: 'store-lookup-v1' });
   expect(result.records.map(record => record.id)).toEqual(productId === 'missing' ? [] : [productId]);
 });
+
+it('collects a bounded multi-page result before independent verification', async () => {
+  const origin = await listen(createFixtureServer());
+  const result = await runProductTask(browser, { origin, referenceCatalog: createCatalog(), templateId: 'store-pages-v1' }, { query: { category: 'laptops', limit: 6 }, pageSize: 2 });
+  expect(result).toMatchObject({ verified: true, state: 'succeeded', templateId: 'store-pages-v1' });
+  expect(result.records).toHaveLength(6);
+  expect(result.events.filter(event => event.type === 'action_completed').map(event => event.actionId))
+    .toEqual(['browse-1', 'observe-1', 'browse-2', 'observe-2', 'browse-3', 'observe-3']);
+});
+
+it.each(['repeated page', 'early empty'])('rejects incomplete pagination: %s', async variant => {
+  const { parseQuery } = await import('../../apps/fixtures/src/storefront.ts');
+  const origin = await listen(createServer((request, response) => {
+    const params = new URL(request.url!, 'http://fixture.invalid').searchParams;
+    if (params.get('page') === '2') {
+      if (variant === 'repeated page') params.set('page', '1');
+      else params.set('maxPriceCents', '0');
+    }
+    response.writeHead(200, { 'content-type': 'text/html' });
+    response.end(renderStorefront(createCatalog(), parseQuery(params)));
+  }));
+  const result = await runProductTask(browser, { origin, referenceCatalog: createCatalog(), templateId: 'store-pages-v1' }, { query: { category: 'laptops', limit: 4 }, pageSize: 2 });
+  expect(result.verified).toBe(false);
+  expect(result.state).toBe('failed');
+  expect(result.verificationReason).toBe(variant === 'repeated page' ? 'duplicate_result' : 'result_mismatch');
+});
+
+it('cancels during a later page without producing a verification success', async () => {
+  const { parseQuery } = await import('../../apps/fixtures/src/storefront.ts');
+  const abort = new AbortController();
+  const pages: string[] = [];
+  const origin = await listen(createServer((request, response) => {
+    const params = new URL(request.url!, 'http://fixture.invalid').searchParams;
+    pages.push(params.get('page')!);
+    if (params.get('page') === '2') { abort.abort(); return; }
+    response.writeHead(200, { 'content-type': 'text/html' });
+    response.end(renderStorefront(createCatalog(), parseQuery(params)));
+  }));
+  const result = await runProductTask(browser, { origin, referenceCatalog: createCatalog(), templateId: 'store-pages-v1' }, { query: { limit: 20 }, pageSize: 1 }, abort.signal);
+  expect(result).toMatchObject({ state: 'cancelled', verified: false });
+  expect(pages).toEqual(['1', '2']);
+  expect(result.events.some(event => event.type === 'verification')).toBe(false);
+});

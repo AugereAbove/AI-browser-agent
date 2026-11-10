@@ -116,3 +116,16 @@ test('lookup admission persists evidence under the lookup template', async () =>
     template_id: 'store-lookup-v1', records: [{ id: 'audio-01' }], verification: { verified: true },
   });
 });
+
+test('page task worker persists one independently verified aggregate', async () => {
+  const { app, coordinator } = await setup();
+  const response = await app.inject({ method: 'POST', url: '/v1/runs', headers,
+    payload: { template_id: 'store-pages-v1', input: { query: { category: 'laptops', limit: 6 }, pageSize: 2 } } });
+  expect(response.statusCode).toBe(202);
+  const id = response.json().run_id;
+  await waitFor(() => coordinator.store.status('api-local', id)?.state === 'succeeded');
+  const evidence = coordinator.store.evidence('api-local', id)!;
+  expect(evidence).toMatchObject({ template_id: 'store-pages-v1', verification: { verified: true } });
+  expect(evidence.records).toHaveLength(6);
+  expect(coordinator.store.get('api-local', id)?.events.filter(event => event.type === 'action_completed')).toHaveLength(6);
+});

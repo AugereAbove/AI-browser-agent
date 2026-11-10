@@ -23,3 +23,10 @@ test('fixture pages preserve ordering and independent verification requires the 
   expect(verifyPagedProducts(catalog, input, [...records].reverse()).verified).toBe(false);
   expect(verifyPagedProducts(catalog, { query: { maxPriceCents: 0 }, pageSize: 2 }, []).verified).toBe(true);
 });
+
+test('page task does not alter the filter or lookup contracts', async () => {
+  const { runRequestSchema } = await import('../../packages/shared/src/run-request.ts');
+  expect(runRequestSchema.safeParse({ template_id: 'store-filter-v1', input: { pageSize: 2 } }).success).toBe(false);
+  expect(runRequestSchema.safeParse({ template_id: 'store-pages-v1', input: { category: 'audio' } }).success).toBe(false);
+  expect(runRequestSchema.parse({ template_id: 'store-pages-v1', input: { query: {} } }).input).toMatchObject({ pageSize: 2 });
+});

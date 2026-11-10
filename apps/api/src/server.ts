@@ -7,7 +7,7 @@ import { isTerminal } from '../../../packages/agent/src/lifecycle.ts';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import Fastify from 'fastify';
 import { z } from 'zod';
-import { productLookupTemplate, productTaskTemplate } from '../../../packages/agent/src/product-task.ts';
+import { productPagesTemplate, productLookupTemplate, productTaskTemplate } from '../../../packages/agent/src/product-task.ts';
 import { runRequestSchema, idempotencyKeySchema } from '../../../packages/shared/src/run-request.ts';
 import { RequestConflictError, QueueFullError, ArtifactIntegrityError, ApprovalConflictError, ApprovalIntegrityError } from '../../../packages/storage/src/run-store.ts';
 import type { RunStore } from '../../../packages/storage/src/run-store.ts';
@@ -83,7 +83,7 @@ export function createApi(config: ApiConfig) {
   });
   app.get('/v1/runs', async () => ({ runs: config.store.list(config.owner) }));
   app.get('/v1/scenarios', async () => ({ scenarios: readScenarios }));
-  app.get('/v1/templates', async () => ({ templates: [productTaskTemplate, productLookupTemplate] }));
+  app.get('/v1/templates', async () => ({ templates: [productTaskTemplate, productLookupTemplate, productPagesTemplate] }));
   app.get('/v1/runs/:id', async (request) => {
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
     const run = config.store.get(config.owner, id);

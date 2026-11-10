@@ -8,6 +8,7 @@ import { ReadPolicy, PolicyError } from '../../policy/src/read-policy.ts';
 import { runRequestSchema } from '../../shared/src/run-request.ts';
 import type { RunRequest } from '../../shared/src/run-request.ts';
 import type { ProductRecord } from '../../shared/src/contracts.ts';
+import { verifyPagedProducts } from '../../verifier/src/product-pages.ts';
 import { verifyProducts } from '../../verifier/src/products.ts';
 import type { CatalogRecord, ProductVerdict } from '../../verifier/src/products.ts';
 import { BudgetError, RunBudget } from './budget.ts';
@@ -19,6 +20,8 @@ export const productTaskTemplate = Object.freeze({
 });
 
 export const productLookupTemplate = Object.freeze({ ...productTaskTemplate, id: 'store-lookup-v1' as const });
+
+export const productPagesTemplate = Object.freeze({ id: 'store-pages-v1' as const, version: 1, maxActions: 40, maxRequests: 20, timeoutMs: 30_000 });
 
 export interface ProductTaskConfig {
   readonly runId?: string;
@@ -60,7 +63,7 @@ export async function runProductTask(
   signal?: AbortSignal,
 ): Promise<ProductTaskResult> {
   const runId = config.runId === undefined ? randomUUID() : z.uuid().parse(config.runId);
-  const template = config.templateId === 'store-lookup-v1' ? productLookupTemplate : productTaskTemplate;
+  const template = config.templateId === 'store-pages-v1' ? productPagesTemplate : config.templateId === 'store-lookup-v1' ? productLookupTemplate : productTaskTemplate;
   const journal = config.journal;
   journal?.start(runId, template.id);
   const status: { state: RunState } = { state: 'queued' };
@@ -87,15 +90,17 @@ export async function runProductTask(
   } else {
     move({ type: 'started' });
     try {
-      const query = runRequestSchema.parse({ template_id: config.templateId ?? 'store-filter-v1', input: rawInput }).input;
+      const input = runRequestSchema.parse({ template_id: config.templateId ?? 'store-filter-v1', input: rawInput }).input;
+      const paged = 'query' in input ? input : undefined;
+      const query = 'query' in input ? input.query : input;
       phase = 'configuration';
       const referenceCatalog = Object.freeze(config.referenceCatalog.map((item) => Object.freeze({
         id: item.id, category: item.category, priceCents: item.priceCents, inStock: item.inStock,
       })));
       const policy = new ReadPolicy([{ origin: config.origin, paths: ['/'] }]);
       const budget = new RunBudget({
-        maxActions: productTaskTemplate.maxActions, maxRequests: productTaskTemplate.maxRequests,
-        timeoutMs: config.timeoutMs ?? productTaskTemplate.timeoutMs,
+        maxActions: template.maxActions, maxRequests: template.maxRequests,
+        timeoutMs: config.timeoutMs ?? template.timeoutMs,
       });
       const url = new URL('/', config.origin);
       for (const [key, value] of Object.entries(query)) {
@@ -103,22 +108,30 @@ export async function runProductTask(
       }
       phase = 'execution';
       session = await openReadSession(browser, policy, budget, signal);
-      emit({ type: 'action_started', actionId: 'browse', actionType: 'navigate' });
-      await session.execute({ id: 'browse', type: 'navigate', url: url.href });
-      emit({ type: 'action_completed', actionId: 'browse', actionType: 'navigate' });
-      emit({ type: 'action_started', actionId: 'observe', actionType: 'extract' });
-      const observation = await session.execute({
-        id: 'observe', type: 'extract', format: 'products',
-        target: { by: 'role', role: 'region', name: 'Matching products' },
-      });
-      if (observation.products === null || observation.truncated) throw new SessionError('invalid_observation');
-      records = observation.products;
-      emit({ type: 'action_completed', actionId: 'observe', actionType: 'extract' });
+      const pages = paged ? Math.ceil(paged.query.limit / paged.pageSize) : 1;
+      for (let page = 1; page <= pages; page++) {
+        if (paged) { url.searchParams.set('pageSize', String(paged.pageSize)); url.searchParams.set('page', String(page)); }
+        const browse = paged ? `browse-${page}` : 'browse';
+        const observe = paged ? `observe-${page}` : 'observe';
+        emit({ type: 'action_started', actionId: browse, actionType: 'navigate' });
+        await session.execute({ id: browse, type: 'navigate', url: url.href });
+        emit({ type: 'action_completed', actionId: browse, actionType: 'navigate' });
+        emit({ type: 'action_started', actionId: observe, actionType: 'extract' });
+        const observation = await session.execute({
+          id: observe, type: 'extract', format: 'products',
+          target: { by: 'role', role: 'region', name: 'Matching products' },
+        });
+        if (observation.products === null || observation.truncated ||
+            (paged && (observation.products.length > paged.pageSize || records.length + observation.products.length > paged.query.limit))) throw new SessionError('invalid_observation');
+        records = Object.freeze([...records, ...observation.products]);
+        emit({ type: 'action_completed', actionId: observe, actionType: 'extract' });
+        if (paged && observation.products.length < paged.pageSize) break;
+      }
       await session.close();
       session = undefined;
       if (signal?.aborted) throw new BudgetError('cancelled');
       move({ type: 'verification_started' });
-      verdict = verifyProducts(referenceCatalog, query, records);
+      verdict = paged ? verifyPagedProducts(referenceCatalog, input, records) : verifyProducts(referenceCatalog, query, records);
       journal?.completeVerification?.(runId, {
         format_version: 1, run_id: runId, template_id: template.id as RunRequest['template_id'],
         records: records.map((record) => ({ ...record })),
