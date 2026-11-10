@@ -7,11 +7,13 @@ test('evaluation executes each declared scenario and separates valid empty resul
   const { stdout } = await execute(process.execPath, ['apps/cli/src/evaluate.ts', '--trials', '1'], { timeout: 20_000 });
   const report = JSON.parse(stdout);
   expect(report.mode).toBe('deterministic-fixture');
-  expect(report.outcomes).toEqual({ passed: 9, total: 9, records: { passed: 7, total: 7 }, empty: { passed: 2, total: 2 } });
+  expect(report.outcomes).toEqual({ passed: 11, total: 11, records: { passed: 9, total: 9 }, empty: { passed: 2, total: 2 } });
   expect(report.environment.chromium).toBeTruthy();
   expect(report.environment.provider).toBeNull();
   expect(report.cleanup_error).toBeNull();
-  expect(report.trials.every((trial: { action_count: number }) => trial.action_count === 2)).toBe(true);
+  expect(report.trials.find((trial: { scenario_id: string }) => trial.scenario_id === 'pagination').action_count).toBe(6);
+  expect(report.trials.find((trial: { scenario_id: string }) => trial.scenario_id === 'multi-page-records').action_count).toBe(10);
+  expect(report.trials.filter((trial: { template_id: string }) => trial.template_id !== 'store-pages-v1').every((trial: { action_count: number }) => trial.action_count === 2)).toBe(true);
   expect(report.total_elapsed_ms).toBeGreaterThanOrEqual(report.setup_ms);
   expect(report).not.toHaveProperty('expectedIds');
 });

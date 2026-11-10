@@ -144,3 +144,24 @@ test('live monitoring reconnects from its cursor and resumes after bounded failu
     expect(store.status('local', runId)?.sequence).toBe(3);
   } finally { await browser.close(); await app.close(); store.close(); }
 });
+
+test('dashboard admits the paginated manifest with its separate nested input', async () => {
+  const token = 'a'.repeat(48);
+  const store = new RunStore(':memory:');
+  const { app, origin } = await serve(store, token, true);
+  const browser = await launchBrowser().catch(async error => { await app.close(); store.close(); throw error; });
+  try {
+    const page = await browser.newPage();
+    page.setDefaultTimeout(5000);
+    await page.goto(origin);
+    await page.getByLabel('API key').fill(token);
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await page.getByRole('article').filter({ hasText: 'Rank six laptops across three pages' }).getByRole('button', { name: 'Run task' }).click();
+    await page.getByText('Watching this run', { exact: true }).waitFor();
+    const run = store.list('local')[0]!;
+    expect(store.request('local', run.run_id)).toEqual({ template_id: 'store-pages-v1', seed: 17,
+      input: { query: { category: 'laptops', inStockOnly: false, limit: 6 }, pageSize: 2 } });
+    await page.getByRole('button', { name: 'Disconnect' }).click();
+    expect(store.list('local')).toHaveLength(1);
+  } finally { await browser.close(); await app.close(); store.close(); }
+});

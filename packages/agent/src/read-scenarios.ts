@@ -1,19 +1,28 @@
 import { z } from 'zod';
 import { runRequestSchema } from '../../shared/src/run-request.ts';
 import { productLookupSchema, productQuerySchema } from '../../shared/src/contracts.ts';
-import { productTaskTemplate } from './product-task.ts';
+import { productPagesSchema } from '../../shared/src/product-pages.ts';
+import { productPagesTemplate, productTaskTemplate } from './product-task.ts';
 
 export const readScenarioSchema = z.strictObject({
   id: z.string().regex(/^[a-z0-9-]{1,80}$/), version: z.literal(1), title: z.string().min(1).max(160),
-  group: z.enum(['discovery', 'comparison']),
-  template_id: z.enum(['store-filter-v1', 'store-lookup-v1']), seed: z.number().int().min(0).max(0xffff_ffff),
-  input: z.union([productQuerySchema, productLookupSchema]), permission_scope: z.literal('read-only-fixture'),
+  group: z.enum(['discovery', 'comparison', 'extraction']),
+  template_id: z.enum(['store-filter-v1', 'store-lookup-v1', 'store-pages-v1']), seed: z.number().int().min(0).max(0xffff_ffff),
+  input: z.union([productQuerySchema, productLookupSchema, productPagesSchema]), permission_scope: z.literal('read-only-fixture'),
   verifier: z.literal('products-v1'), expected_outcome: z.enum(['records', 'empty']),
   evidence: z.literal('product-evidence-v1'),
-  budgets: z.strictObject({ maxActions: z.literal(2), maxRequests: z.literal(1), timeoutMs: z.literal(30_000) }),
-}).refine(value => runRequestSchema.safeParse({ template_id: value.template_id, input: value.input, seed: value.seed }).success, 'Template input mismatch');
+  budgets: z.union([
+    z.strictObject({ maxActions: z.literal(2), maxRequests: z.literal(1), timeoutMs: z.literal(30_000) }),
+    z.strictObject({ maxActions: z.literal(40), maxRequests: z.literal(20), timeoutMs: z.literal(30_000) }),
+  ]),
+}).refine(value => {
+  const template = value.template_id === 'store-pages-v1' ? productPagesTemplate : productTaskTemplate;
+  return runRequestSchema.safeParse({ template_id: value.template_id, input: value.input, seed: value.seed }).success &&
+    value.budgets.maxActions === template.maxActions && value.budgets.maxRequests === template.maxRequests;
+}, 'Template input or budget mismatch');
 function scenario(value: unknown) {
   const parsed = readScenarioSchema.parse(value);
+  if ('query' in parsed.input) Object.freeze(parsed.input.query);
   Object.freeze(parsed.input);
   Object.freeze(parsed.budgets);
   return Object.freeze(parsed);
@@ -33,4 +42,6 @@ export const readScenarios = Object.freeze([
   scenario({ ...common, id: 'unknown-product', title: 'Confirm an unknown product ID is absent', group: 'discovery', seed: 42, template_id: 'store-lookup-v1', input: { productId: 'unknown-product' }, expected_outcome: 'empty' }),
   scenario({ ...common, id: 'cheapest-match', title: 'Find the cheapest accessory', group: 'comparison', seed: 0, input: { category: 'accessories', limit: 1 }, expected_outcome: 'records' }),
   scenario({ ...common, id: 'ranked-shortlist', title: 'Rank three laptops by price', group: 'comparison', seed: 123, input: { category: 'laptops', limit: 3 }, expected_outcome: 'records' }),
+  scenario({ ...common, id: 'pagination', title: 'Rank six laptops across three pages', group: 'comparison', seed: 17, template_id: 'store-pages-v1', input: { query: { category: 'laptops', limit: 6 }, pageSize: 2 }, budgets: { maxActions: 40, maxRequests: 20, timeoutMs: 30000 }, expected_outcome: 'records' }),
+  scenario({ ...common, id: 'multi-page-records', title: 'Extract all storefront records across pages', group: 'extraction', seed: 42, template_id: 'store-pages-v1', input: { query: { limit: 20 }, pageSize: 3 }, budgets: { maxActions: 40, maxRequests: 20, timeoutMs: 30000 }, expected_outcome: 'records' }),
 ]);
