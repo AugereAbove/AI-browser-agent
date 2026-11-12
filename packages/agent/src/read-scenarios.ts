@@ -1,3 +1,4 @@
+import { productRecoverySchema } from '../../shared/src/fixture-variant.ts';
 import { z } from 'zod';
 import { runRequestSchema } from '../../shared/src/run-request.ts';
 import { productLookupSchema, productQuerySchema } from '../../shared/src/contracts.ts';
@@ -6,9 +7,9 @@ import { productPagesTemplate, productTaskTemplate } from './product-task.ts';
 
 export const readScenarioSchema = z.strictObject({
   id: z.string().regex(/^[a-z0-9-]{1,80}$/), version: z.literal(1), title: z.string().min(1).max(160),
-  group: z.enum(['discovery', 'comparison', 'extraction']),
-  template_id: z.enum(['store-filter-v1', 'store-lookup-v1', 'store-pages-v1']), seed: z.number().int().min(0).max(0xffff_ffff),
-  input: z.union([productQuerySchema, productLookupSchema, productPagesSchema]), permission_scope: z.literal('read-only-fixture'),
+  group: z.enum(['discovery', 'comparison', 'extraction', 'recovery']),
+  template_id: z.enum(['store-filter-v1', 'store-lookup-v1', 'store-pages-v1', 'store-recovery-v1']), seed: z.number().int().min(0).max(0xffff_ffff),
+  input: z.union([productQuerySchema, productLookupSchema, productPagesSchema, productRecoverySchema]), permission_scope: z.literal('read-only-fixture'),
   verifier: z.literal('products-v1'), expected_outcome: z.enum(['records', 'empty']),
   evidence: z.literal('product-evidence-v1'),
   budgets: z.union([
@@ -44,4 +45,6 @@ export const readScenarios = Object.freeze([
   scenario({ ...common, id: 'ranked-shortlist', title: 'Rank three laptops by price', group: 'comparison', seed: 123, input: { category: 'laptops', limit: 3 }, expected_outcome: 'records' }),
   scenario({ ...common, id: 'pagination', title: 'Rank six laptops across three pages', group: 'comparison', seed: 17, template_id: 'store-pages-v1', input: { query: { category: 'laptops', limit: 6 }, pageSize: 2 }, budgets: { maxActions: 40, maxRequests: 20, timeoutMs: 30000 }, expected_outcome: 'records' }),
   scenario({ ...common, id: 'multi-page-records', title: 'Extract all storefront records across pages', group: 'extraction', seed: 42, template_id: 'store-pages-v1', input: { query: { limit: 20 }, pageSize: 3 }, budgets: { maxActions: 40, maxRequests: 20, timeoutMs: 30000 }, expected_outcome: 'records' }),
+  scenario({ ...common, id: 'changed-css-classes', title: 'Read products after CSS changes', group: 'recovery', seed: 17, template_id: 'store-recovery-v1', input: { query: { category: 'audio', limit: 3 }, variant: 'changed-css' }, expected_outcome: 'records' }),
+  scenario({ ...common, id: 'delayed-content', title: 'Wait for delayed storefront content', group: 'recovery', seed: 42, template_id: 'store-recovery-v1', input: { query: { category: 'laptops', inStockOnly: true, limit: 3 }, variant: 'delayed-content' }, expected_outcome: 'records' }),
 ]);

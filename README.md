@@ -113,15 +113,15 @@ Streams have a 4 KiB backpressure buffer, 64-event read batches, eight concurren
 
 ## Read scenarios
 
-`GET /v1/scenarios` returns eleven versioned manifests: category match, price ceiling, combined constraints, valid empty result, stock-aware comparison, exact match, unknown product, cheapest match, ranked shortlist, pagination, and multi-page records. Each declares a fixture seed, supported input, read-only permission scope, budgets, verifier, evidence format and records/empty outcome. Submit a manifest's `template_id`, `input` and `seed` to the run endpoint; its descriptive fields are not submission parameters.
+`GET /v1/scenarios` returns thirteen versioned manifests: category match, price ceiling, combined constraints, valid empty result, stock-aware comparison, exact match, unknown product, cheapest match, ranked shortlist, pagination, multi-page records, changed CSS classes, and delayed content. Each declares a fixture seed, supported input, read-only permission scope, budgets, verifier, evidence format and records/empty outcome. Submit a manifest's `template_id`, `input` and `seed` to the run endpoint; its descriptive fields are not submission parameters.
 
 ```sh
 pnpm evaluate:read --output artifacts/read-evaluation.json
 ```
 
-Runs three trials of each manifest with no model credentials. The report separates 27 record-result trials from six valid-empty trials and includes all declared attempts, including browser launch failures. One browser process is shared; every trial gets a fresh context and fixture. Per-trial timing includes fixture startup and cleanup; shared browser setup is reported separately and included in total elapsed time. JSON serialization and output-file writing are outside that total. Human approval time is zero for these read tasks. Reports include versions, machine details, action counts, failures and nearest-rank p50/p95. CI uploads the synthetic report for seven days.
+Runs three trials of each manifest with no model credentials. The report separates 33 record-result trials from six valid-empty trials and includes all declared attempts, including browser launch failures. One browser process is shared; every trial gets a fresh context and fixture. Per-trial timing includes fixture startup and cleanup; shared browser setup is reported separately and included in total elapsed time. JSON serialization and output-file writing are outside that total. Human approval time is zero for these read tasks. Reports include versions, machine details, action counts, failures and nearest-rank p50/p95. CI uploads the synthetic report for seven days.
 
-This evaluates eleven deterministic fixture scenarios, not model planning, the full 25-scenario benchmark, an independent false-positive audit, or the 100-run crash target. There are no provider token or cost measurements. The remaining scenario groups and consequential form workflow are not implemented.
+This evaluates thirteen deterministic fixture scenarios, not model planning, the full 25-scenario benchmark, an independent false-positive audit, or the 100-run crash target. There are no provider token or cost measurements. The remaining scenarios and consequential form workflow are not implemented.
 
 Approval bindings can be journaled through the trusted `RunStore.requestApproval` API. Schema 5 stores a bounded synthetic action snapshot and digest with its owner/run/action, and atomically enters `awaiting_approval`. Cancellation, terminal events and exclusive startup recovery invalidate outstanding tickets. These records do not enable browser writes; real data and secrets must not be supplied to this synthetic-only interface.
 

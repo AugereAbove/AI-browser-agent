@@ -108,7 +108,7 @@ test('the scenario gallery exposes supported inputs without reference answers', 
   const { app } = setup();
   const response = await app.inject({ url: '/v1/scenarios', headers });
   expect(response.statusCode).toBe(200);
-  expect(response.json().scenarios).toHaveLength(11);
+  expect(response.json().scenarios).toHaveLength(13);
   expect(response.json().scenarios.every((scenario: { permission_scope: string }) => scenario.permission_scope === 'read-only-fixture')).toBe(true);
   expect(response.body).not.toContain('expectedIds');
 });

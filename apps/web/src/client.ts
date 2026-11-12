@@ -1,3 +1,4 @@
+import { productRecoverySchema } from '../../../packages/shared/src/fixture-variant.ts';
 import { productPagesSchema } from '../../../packages/shared/src/product-pages.ts';
 import { runRequestSchema } from '../../../packages/shared/src/run-request.ts';
 import { z } from 'zod';
@@ -7,7 +8,7 @@ import { actionProposalSchema, productLookupSchema, productQuerySchema } from '.
 const id = z.uuid();
 const state = z.enum(['queued', 'running', 'awaiting_approval', 'verifying', 'succeeded', 'failed', 'denied', 'cancelled', 'timed_out', 'interrupted']);
 export const scenariosSchema = z.object({ scenarios: z.array(z.object({ id: z.string().max(80), title: z.string().max(160),
-  template_id: z.enum(['store-filter-v1', 'store-lookup-v1', 'store-pages-v1']), seed: z.number().int(), input: z.union([productQuerySchema, productLookupSchema, productPagesSchema]), permission_scope: z.literal('read-only-fixture') }).refine(value => runRequestSchema.safeParse({ template_id: value.template_id, input: value.input, seed: value.seed }).success, 'Template input mismatch')).max(25) });
+  template_id: z.enum(['store-filter-v1', 'store-lookup-v1', 'store-pages-v1', 'store-recovery-v1']), seed: z.number().int(), input: z.union([productQuerySchema, productLookupSchema, productPagesSchema, productRecoverySchema]), permission_scope: z.literal('read-only-fixture') }).refine(value => runRequestSchema.safeParse({ template_id: value.template_id, input: value.input, seed: value.seed }).success, 'Template input mismatch')).max(25) });
 export const runsSchema = z.object({ runs: z.array(z.object({ run_id: id, template_id: z.string().max(80), state,
   sequence: z.number().int().min(0).max(1001), created_at: z.iso.datetime() })).max(50) });
 export const eventSchema = z.object({ sequence: z.number().int().min(1).max(1001), state,

@@ -1,3 +1,6 @@
+import { fixtureVariantFor } from '../../../packages/shared/src/fixture-variant.ts';
+import { runRequestSchema } from '../../../packages/shared/src/run-request.ts';
+import type { FixtureVariant } from '../../../packages/shared/src/fixture-variant.ts';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -15,7 +18,7 @@ import { createFixtureServer } from '../../fixtures/src/server.ts';
 import { createCatalog } from '../../fixtures/src/catalog.ts';
 
 interface Trial {
-  scenario_id: string; template_id: string; run_id: string | null; trial: number; expected_outcome: 'records' | 'empty'; state: RunState;
+  scenario_id: string; template_id: string; fixture_variant: FixtureVariant; run_id: string | null; trial: number; expected_outcome: 'records' | 'empty'; state: RunState;
   verified: boolean; passed: boolean; record_count: number; action_count: number;
   elapsed_ms: number; error_code: string | null; verification_reason: string | null;
 }
@@ -42,12 +45,14 @@ export async function evaluateReadTasks(trialCount = 3, signal?: AbortSignal) {
   const browserVersion = browser?.version() ?? null;
   try {
     for (const scenario of readScenarios) {
+      const request = runRequestSchema.parse({ template_id: scenario.template_id, input: scenario.input, seed: scenario.seed });
+      const variant = fixtureVariantFor(request);
       for (let trial = 1; trial <= trialCount; trial++) {
         const tick = performance.now();
         let result: ProductTaskResult | undefined;
         let error = setupError;
         if (browser && !signal?.aborted) {
-          const fixture = createFixtureServer(scenario.seed);
+          const fixture = createFixtureServer(scenario.seed, variant);
           try {
             await new Promise<void>((resolve, reject) => {
               fixture.once('error', reject);
@@ -64,7 +69,7 @@ export async function evaluateReadTasks(trialCount = 3, signal?: AbortSignal) {
           }
         }
         const matchesLabel = result !== undefined && (scenario.expected_outcome === 'empty' ? result.records.length === 0 : result.records.length > 0);
-        trials.push({ scenario_id: scenario.id, template_id: scenario.template_id, run_id: result?.runId ?? null, trial, expected_outcome: scenario.expected_outcome,
+        trials.push({ scenario_id: scenario.id, template_id: scenario.template_id, fixture_variant: variant, run_id: result?.runId ?? null, trial, expected_outcome: scenario.expected_outcome,
           state: result?.state ?? (signal?.aborted ? 'cancelled' : 'failed'), verified: result?.verified ?? false,
           passed: result?.verified === true && matchesLabel,
           record_count: result?.records.length ?? 0,

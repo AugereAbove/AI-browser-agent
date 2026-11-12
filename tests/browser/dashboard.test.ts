@@ -165,3 +165,25 @@ test('dashboard admits the paginated manifest with its separate nested input', a
     expect(store.list('local')).toHaveLength(1);
   } finally { await browser.close(); await app.close(); store.close(); }
 });
+
+test.each([
+  ['Read products after CSS changes', 'changed-css'],
+  ['Wait for delayed storefront content', 'delayed-content'],
+])('gallery admits the declared recovery variant: %s', async (title, variant) => {
+  const token = 'a'.repeat(48);
+  const store = new RunStore(':memory:');
+  const { app, origin } = await serve(store, token, true);
+  const browser = await launchBrowser().catch(async error => { await app.close(); store.close(); throw error; });
+  try {
+    const page = await browser.newPage();
+    page.setDefaultTimeout(5000);
+    await page.goto(origin);
+    await page.getByLabel('API key').fill(token);
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await page.getByRole('article').filter({ hasText: title }).getByRole('button', { name: 'Run task' }).click();
+    await page.getByText('Watching this run', { exact: true }).waitFor();
+    const run = store.list('local')[0]!;
+    expect(store.request('local', run.run_id)).toMatchObject({ template_id: 'store-recovery-v1', input: { variant } });
+    expect(store.list('local')).toHaveLength(1);
+  } finally { await browser.close(); await app.close(); store.close(); }
+});
