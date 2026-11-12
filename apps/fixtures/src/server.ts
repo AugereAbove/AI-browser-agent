@@ -1,11 +1,15 @@
+import { fixtureVariantSchema } from '../../../packages/shared/src/fixture-variant.ts';
+import type { FixtureVariant } from '../../../packages/shared/src/fixture-variant.ts';
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { createCatalog } from './catalog.ts';
 import { parseQuery, renderStorefront } from './storefront.ts';
 
-export function createFixtureServer(seed = 0) {
+export function createFixtureServer(seed = 0, rawVariant: FixtureVariant = 'standard') {
+  const variant = fixtureVariantSchema.parse(rawVariant);
+  const pending = new Set<ReturnType<typeof setTimeout>>();
   const catalog = createCatalog(seed);
-  return createServer((request, response) => {
+  const server = createServer((request, response) => {
     response.setHeader('Content-Type', 'text/html; charset=utf-8');
     response.setHeader('Cache-Control', 'no-store');
     response.setHeader('X-Content-Type-Options', 'nosniff');
@@ -22,14 +26,25 @@ export function createFixtureServer(seed = 0) {
         response.end('Not found');
         return;
       }
-      const html = renderStorefront(catalog, parseQuery(url.searchParams));
-      response.writeHead(200);
-      response.end(request.method === 'HEAD' ? undefined : html);
+      let html = renderStorefront(catalog, parseQuery(url.searchParams));
+      if (variant === 'changed-css') html = html.replaceAll('<article ', '<article class="catalog-card-v2" ').replaceAll('<h2>', '<h2 class="new-title-style">').replace('</style>', '.catalog-card-v2{border-radius:0;border-width:3px;background:#eef5ff}.new-title-style{letter-spacing:1px}</style>');
+      if (variant === 'delayed-content' && request.method !== 'HEAD') {
+        response.writeHead(200);
+        response.write('<!doctype html><html><head><title>Fixture Store</title></head><body>');
+        const timer = setTimeout(() => { pending.delete(timer); if (!response.destroyed) response.end(html.slice(html.indexOf('<header>'))); }, 250);
+        pending.add(timer);
+        response.once('close', () => { clearTimeout(timer); pending.delete(timer); });
+      } else {
+        response.writeHead(200);
+        response.end(request.method === 'HEAD' ? undefined : html);
+      }
     } catch {
       response.writeHead(400);
       response.end('Invalid fixture query');
     }
   });
+  server.once('close', () => { for (const timer of pending) clearTimeout(timer); pending.clear(); });
+  return server;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

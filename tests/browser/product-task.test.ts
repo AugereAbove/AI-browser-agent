@@ -176,3 +176,20 @@ it('cancels during a later page without producing a verification success', async
   expect(pages).toEqual(['1', '2']);
   expect(result.events.some(event => event.type === 'verification')).toBe(false);
 });
+
+it.each(['changed-css', 'delayed-content'] as const)('verifies the same catalog after %s', async variant => {
+  const origin = await listen(createFixtureServer(17, variant));
+  const result = await runProductTask(browser, { origin, referenceCatalog: createCatalog(17) }, { category: 'audio', limit: 3 });
+  expect(result).toMatchObject({ state: 'succeeded', verified: true });
+  expect(result.records).toHaveLength(3);
+  expect(result.events.filter(event => event.type === 'action_completed')).toHaveLength(2);
+});
+
+it('cancels a streamed delayed-content response and closes its context', async () => {
+  const fixture = createFixtureServer(0, 'delayed-content');
+  const origin = await listen(fixture);
+  const abort = new AbortController();
+  fixture.once('request', () => setTimeout(() => abort.abort(), 30));
+  const result = await runProductTask(browser, { origin, referenceCatalog: createCatalog() }, {}, abort.signal);
+  expect(result).toMatchObject({ state: 'cancelled', verified: false });
+});
