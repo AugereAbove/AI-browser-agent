@@ -129,3 +129,17 @@ test('page task worker persists one independently verified aggregate', async () 
   expect(evidence.records).toHaveLength(6);
   expect(coordinator.store.get('api-local', id)?.events.filter(event => event.type === 'action_completed')).toHaveLength(6);
 });
+
+test.each(['changed-css', 'delayed-content'] as const)('recovery worker verifies %s and retains its template binding', async variant => {
+  const { app, coordinator } = await setup();
+  const response = await app.inject({ method: 'POST', url: '/v1/runs', headers,
+    payload: { template_id: 'store-recovery-v1', input: { query: { category: 'audio', limit: 3 }, variant }, seed: 17 } });
+  expect(response.statusCode).toBe(202);
+  const id = response.json().run_id;
+  await waitFor(() => coordinator.store.status('api-local', id)?.state === 'succeeded');
+  expect(coordinator.store.request('api-local', id)?.input).toMatchObject({ variant });
+  expect(coordinator.store.evidence('api-local', id)).toMatchObject({
+    template_id: 'store-recovery-v1', verification: { verified: true }, records: [{ id: 'audio-03' }, { id: 'audio-01' }, { id: 'audio-02' }],
+  });
+  expect(coordinator.store.get('api-local', id)?.events.filter(event => event.type === 'action_completed')).toHaveLength(2);
+});

@@ -1,3 +1,4 @@
+import { fixtureVariantFor } from '../../../packages/shared/src/fixture-variant.ts';
 import { chromium } from 'playwright';
 import { RunStore } from '../../../packages/storage/src/run-store.ts';
 import { runProductTask } from '../../../packages/agent/src/product-task.ts';
@@ -20,7 +21,7 @@ if (!request || saved?.state !== 'queued') {
   clearTimeout(watchdog);
   process.disconnect();
 } else {
-  const fixture = createFixtureServer(request.seed);
+  const fixture = createFixtureServer(request.seed, fixtureVariantFor(request));
   let browserServer;
   let browser;
   try {

@@ -109,6 +109,8 @@ Streams have a 4 KiB backpressure buffer, 64-event read batches, eight concurren
 
 `store-pages-v1` accepts `{ "query": { "category": "laptops", "limit": 6 }, "pageSize": 2 }`. The nested query uses the existing product filters; page size is 1–5. The runner constructs each fixture page URL, collects at most 20 records across at most 20 requests/40 actions, and verifies the complete ordered aggregate against the fixture catalog. Repeated or omitted pages fail verification. Cancellation and the shared 30-second deadline cover all pages. The original filter and lookup inputs are unchanged.
 
+`store-recovery-v1` accepts `{ "query": { "category": "audio" }, "variant": "changed-css" }` or variant `delayed-content`. The worker selects the declared local fixture variant. Changed CSS preserves semantic controls and records; delayed content streams a document prefix and completes its content after 250 ms. The browser transport buffers this response before exposing it to the page. Both use the same independent product verifier and two-action/one-request/30-second limits. This covers presentation changes and delayed responses; it does not retry HTTP failures or enable page scripts.
+
 ## Read scenarios
 
 `GET /v1/scenarios` returns eleven versioned manifests: category match, price ceiling, combined constraints, valid empty result, stock-aware comparison, exact match, unknown product, cheapest match, ranked shortlist, pagination, and multi-page records. Each declares a fixture seed, supported input, read-only permission scope, budgets, verifier, evidence format and records/empty outcome. Submit a manifest's `template_id`, `input` and `seed` to the run endpoint; its descriptive fields are not submission parameters.

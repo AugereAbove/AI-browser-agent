@@ -23,6 +23,8 @@ export const productLookupTemplate = Object.freeze({ ...productTaskTemplate, id:
 
 export const productPagesTemplate = Object.freeze({ id: 'store-pages-v1' as const, version: 1, maxActions: 40, maxRequests: 20, timeoutMs: 30_000 });
 
+export const productRecoveryTemplate = Object.freeze({ ...productTaskTemplate, id: 'store-recovery-v1' as const });
+
 export interface ProductTaskConfig {
   readonly runId?: string;
   readonly templateId?: RunRequest['template_id'];
@@ -63,7 +65,7 @@ export async function runProductTask(
   signal?: AbortSignal,
 ): Promise<ProductTaskResult> {
   const runId = config.runId === undefined ? randomUUID() : z.uuid().parse(config.runId);
-  const template = config.templateId === 'store-pages-v1' ? productPagesTemplate : config.templateId === 'store-lookup-v1' ? productLookupTemplate : productTaskTemplate;
+  const template = config.templateId === 'store-recovery-v1' ? productRecoveryTemplate : config.templateId === 'store-pages-v1' ? productPagesTemplate : config.templateId === 'store-lookup-v1' ? productLookupTemplate : productTaskTemplate;
   const journal = config.journal;
   journal?.start(runId, template.id);
   const status: { state: RunState } = { state: 'queued' };
@@ -91,7 +93,7 @@ export async function runProductTask(
     move({ type: 'started' });
     try {
       const input = runRequestSchema.parse({ template_id: config.templateId ?? 'store-filter-v1', input: rawInput }).input;
-      const paged = 'query' in input ? input : undefined;
+      const paged = 'pageSize' in input ? input : undefined;
       const query = 'query' in input ? input.query : input;
       phase = 'configuration';
       const referenceCatalog = Object.freeze(config.referenceCatalog.map((item) => Object.freeze({

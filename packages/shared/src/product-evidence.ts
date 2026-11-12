@@ -4,7 +4,7 @@ import { productRecordsSchema } from './contracts.ts';
 export const productEvidenceSchema = z.strictObject({
   format_version: z.literal(1),
   run_id: z.uuid(),
-  template_id: z.enum(['store-filter-v1', 'store-lookup-v1', 'store-pages-v1']),
+  template_id: z.enum(['store-filter-v1', 'store-lookup-v1', 'store-pages-v1', 'store-recovery-v1']),
   records: productRecordsSchema,
   verification: z.strictObject({
     verified: z.boolean(),
